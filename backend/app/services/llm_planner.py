@@ -146,7 +146,7 @@ class LLMPlanner:
 
             response = self._client.chat.completions.create(
                 model=self._model,
-                temperature=0.1,
+                temperature=1,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
