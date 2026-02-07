@@ -1,0 +1,32 @@
+[
+  {
+    "id": "group-and-sum",
+    "label": "Raggruppa e somma",
+    "description": "Raggruppa per una chiave e calcola totali numerici.",
+    "prompt": "Raggruppa i dati per [colonna_gruppo] e calcola la somma di [colonna_valore]. Restituisci una tabella pulita con un record per gruppo e la colonna totale."
+  },
+  {
+    "id": "remove-duplicates",
+    "label": "Rimuovi duplicati",
+    "description": "Elimina record duplicati mantenendo solo la prima occorrenza.",
+    "prompt": "Rimuovi i duplicati usando come chiave [colonna_chiave] e mantieni solo la prima riga per ogni chiave."
+  },
+  {
+    "id": "monthly-summary",
+    "label": "Riepilogo mensile",
+    "description": "Crea un riepilogo aggregato per mese.",
+    "prompt": "Genera un riepilogo mensile usando la colonna data [colonna_data] e la colonna numerica [colonna_valore]. Aggrega per mese con somma totale e ordina cronologicamente."
+  },
+  {
+    "id": "normalize-dates",
+    "label": "Normalizza date",
+    "description": "Converte e uniforma i formati data.",
+    "prompt": "Normalizza la colonna [colonna_data] in formato data coerente ISO (YYYY-MM-DD), correggendo valori non uniformi dove possibile."
+  },
+  {
+    "id": "merge-multiple-files",
+    "label": "Unisci piu file",
+    "description": "Prepara una fusione tra sorgenti sulla stessa chiave.",
+    "prompt": "Unisci le sorgenti disponibili usando la chiave [colonna_id], mantieni tutte le colonne rilevanti, risolvi i conflitti con priorita alla sorgente principale e produci un dataset finale unico."
+  }
+]

@@ -1,0 +1,38 @@
+[
+  {
+    "id": "unsupported_file",
+    "matches": ["unsupported file type", "unsupported file format"],
+    "message": "Questo file non e supportato.",
+    "next_step": "Carica un file CSV o XLSX e riprova."
+  },
+  {
+    "id": "file_not_found",
+    "matches": ["source file not found", "file not found", "upload not found"],
+    "message": "Non trovo il file che avevi caricato.",
+    "next_step": "Ricarica il file e genera di nuovo il piano."
+  },
+  {
+    "id": "free_limit",
+    "matches": ["free tier limit reached", "limit_reached"],
+    "message": "Hai raggiunto il limite delle elaborazioni gratuite.",
+    "next_step": "Passa al piano Pro per continuare."
+  },
+  {
+    "id": "clarification_required",
+    "matches": ["ambigua", "incompleta", "clarification"],
+    "message": "La richiesta non e ancora chiara.",
+    "next_step": "Rispondi alla domanda di chiarimento e rigenera il piano."
+  },
+  {
+    "id": "invalid_plan",
+    "matches": ["unsupported operation type", "plan must contain", "invalid_plan"],
+    "message": "Non riesco a capire il piano di trasformazione.",
+    "next_step": "Rigenera il piano oppure correggi il testo del prompt."
+  },
+  {
+    "id": "generic_processing",
+    "matches": ["preview failed", "transformation failed", "upload failed", "unable to read source file"],
+    "message": "Si e verificato un problema durante l'elaborazione.",
+    "next_step": "Riprova tra poco o ricarica il file."
+  }
+]
