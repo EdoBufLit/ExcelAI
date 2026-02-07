@@ -6,7 +6,7 @@ MVP web app per trasformare file Excel/CSV con piano JSON generato da LLM e appl
 - Backend: FastAPI + Python + pandas
 - Frontend: React + Vite
 - File supportati: `.xlsx`, `.csv`
-- LLM: OpenAI API (con fallback locale se `OPENAI_API_KEY` non e impostata)
+- LLM: provider OpenAI-compatible (OpenAI/Kimi) con fallback locale se API key non impostata
 
 ## Funzionalita MVP
 - Upload file Excel/CSV
@@ -49,6 +49,11 @@ pip install -r requirements.txt
 copy .env.example .env
 uvicorn app.main:app --reload --port 8000
 ```
+
+### Config LLM (OpenAI + Kimi compatible)
+- Variabili consigliate (future-proof): `LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL`
+- Compatibilita legacy mantenuta: `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL`
+- Alias Kimi supportati: `KIMI_API_KEY`, `KIMI_MODEL`, `KIMI_BASE_URL`
 
 ## Frontend local setup
 ```bash

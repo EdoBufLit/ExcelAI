@@ -52,5 +52,8 @@
   - Added explicit map error -> human UI message with next-step suggestion.
   - Removed technical raw error exposure from API layer and added fallback safe generic messaging.
   - Added friendly handling for invalid JSON plan editing in preview/apply flow.
+- Reliability increment (stream + provider compatibility):
+  - Fixed frontend response error handling to read response body exactly once and parse JSON safely.
+  - Added OpenAI-compatible base_url support with LLM/OpenAI/Kimi env aliases, without breaking existing OPENAI_* configuration.
 - Residual note:
   - Python 3.14 emits deprecation warnings from FastAPI/Starlette/OpenAI dependencies, but functional tests pass.

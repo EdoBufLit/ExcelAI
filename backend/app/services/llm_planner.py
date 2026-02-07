@@ -47,15 +47,16 @@ Supported operations:
 
 
 class LLMPlanner:
-    def __init__(self, api_key: str | None, model: str) -> None:
+    def __init__(self, api_key: str | None, model: str, base_url: str | None = None) -> None:
         self._api_key = api_key
         self._model = model
-        self._client = OpenAI(api_key=api_key) if api_key else None
+        self._base_url = base_url
+        self._client = OpenAI(api_key=api_key, base_url=base_url) if api_key else None
 
     def create_plan(self, prompt: str, analysis: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
         if self._client is None:
             return self._fallback_plan(prompt, analysis), [
-                "OPENAI_API_KEY non configurata: uso planner euristico locale.",
+                "LLM_API_KEY/OPENAI_API_KEY non configurata: uso planner euristico locale.",
             ]
 
         try:

@@ -5,13 +5,19 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, options);
   if (!response.ok) {
-    let errorDetail = "";
+    const raw = await response.text();
+    let errorDetail = raw;
+
     try {
-      const payload = await response.json();
-      errorDetail = typeof payload.detail === "string" ? payload.detail : JSON.stringify(payload);
+      const payload = JSON.parse(raw);
+      errorDetail =
+        typeof payload?.detail === "string"
+          ? payload.detail
+          : JSON.stringify(payload);
     } catch {
-      errorDetail = await response.text();
+      // raw non era JSON, va bene cosi
     }
+
     throw new Error(toUiErrorMessage(errorDetail, response.status));
   }
   return response;
