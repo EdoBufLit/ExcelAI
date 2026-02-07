@@ -1,6 +1,32 @@
 import { toUiErrorMessage } from "./utils/error-message";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+const DEFAULT_API_BASE_URL = "http://localhost:8000";
+const INVALID_BASE_URL_MESSAGE =
+  "Configurazione API non valida. Imposta VITE_API_BASE_URL con un URL valido (es. https://api.example.com).";
+
+function normalizeBaseUrl(rawBaseUrl) {
+  const candidate = typeof rawBaseUrl === "string" ? rawBaseUrl.trim() : "";
+  const input = candidate || DEFAULT_API_BASE_URL;
+  const withProtocol = /^https?:\/\//i.test(input) ? input : `https://${input}`;
+  const withoutTrailingSlash = withProtocol.replace(/\/+$/, "");
+
+  try {
+    const parsed = new URL(withoutTrailingSlash);
+    if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname) {
+      return { value: null, error: INVALID_BASE_URL_MESSAGE };
+    }
+    return {
+      value: parsed.toString().replace(/\/+$/, ""),
+      error: null
+    };
+  } catch {
+    return { value: null, error: INVALID_BASE_URL_MESSAGE };
+  }
+}
+
+const normalizedBaseUrl = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL);
+const API_BASE_URL = normalizedBaseUrl.value;
+const API_BASE_URL_ERROR = normalizedBaseUrl.error;
 
 function parseJson(raw) {
   if (!raw) return null;
@@ -21,6 +47,10 @@ function ensureObjectPayload(payload, fallbackMessage) {
 }
 
 async function request(path, options = {}) {
+  if (API_BASE_URL_ERROR || !API_BASE_URL) {
+    throw new Error(API_BASE_URL_ERROR || INVALID_BASE_URL_MESSAGE);
+  }
+
   const response = await fetch(`${API_BASE_URL}${path}`, options);
   const bodyBlob = await response.blob();
   const raw = await bodyBlob.text();
