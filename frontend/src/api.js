@@ -37,6 +37,24 @@ function parseJson(raw) {
   }
 }
 
+function toCamelCaseKey(key) {
+  return key.replace(/_([a-z])/g, (_, char) => char.toUpperCase());
+}
+
+function normalizeKeys(value) {
+  if (Array.isArray(value)) {
+    return value.map(normalizeKeys);
+  }
+  if (value && typeof value === "object") {
+    const normalized = {};
+    for (const [key, nestedValue] of Object.entries(value)) {
+      normalized[toCamelCaseKey(key)] = normalizeKeys(nestedValue);
+    }
+    return normalized;
+  }
+  return value;
+}
+
 function ensureObjectPayload(payload, fallbackMessage) {
   if (payload && typeof payload === "object" && !Array.isArray(payload)) {
     return payload;
@@ -55,6 +73,7 @@ async function request(path, options = {}) {
   const bodyBlob = await response.blob();
   const raw = await bodyBlob.text();
   const payload = parseJson(raw);
+  const normalizedPayload = normalizeKeys(payload);
 
   if (!response.ok) {
     const errorDetail =
@@ -68,7 +87,7 @@ async function request(path, options = {}) {
     response,
     bodyBlob,
     raw,
-    payload
+    payload: normalizedPayload
   };
 }
 

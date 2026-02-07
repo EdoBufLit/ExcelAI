@@ -84,6 +84,31 @@ export default function App() {
     apply: false
   });
   const [error, setError] = useState("");
+  const [pipelineDebug, setPipelineDebug] = useState({
+    uploadResult: null,
+    analyzeResult: null,
+    planResult: null,
+    errors: []
+  });
+
+  function logPipelineError(stage, err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[pipeline] ${stage} error`, err);
+    setPipelineDebug((previous) => ({
+      ...previous,
+      errors: [{ stage, message }, ...previous.errors].slice(0, 10)
+    }));
+    return message;
+  }
+
+  function applyPlanPayloadToState(payload) {
+    setPlanText(JSON.stringify(payload.plan, null, 2));
+    setPlanWarnings(payload.warnings || []);
+    setNeedsClarification(Boolean(payload.needsClarification));
+    setClarificationQuestion(payload.clarificationQuestion || "");
+    setPipelineDebug((previous) => ({ ...previous, planResult: payload }));
+    console.log("[pipeline] plan result", payload);
+  }
 
   function getExecutablePlanOrShowError({ closeConfirmation } = { closeConfirmation: false }) {
     const parsedPlanResult = parsePlanText(planText);
@@ -116,9 +141,27 @@ export default function App() {
       const usageData = await fetchUsage(userId);
       setUsage(usageData);
     } catch (err) {
-      setError(err.message);
+      setError(logPipelineError("usage", err));
     } finally {
       setLoading((s) => ({ ...s, usage: false }));
+    }
+  }
+
+  async function generatePlanForFile(fileId) {
+    setLoading((s) => ({ ...s, plan: true }));
+    try {
+      const payload = await generatePlan({
+        fileId,
+        prompt,
+        userId
+      });
+      applyPlanPayloadToState(payload);
+      return payload;
+    } catch (err) {
+      setError(logPipelineError("plan", err));
+      return null;
+    } finally {
+      setLoading((s) => ({ ...s, plan: false }));
     }
   }
 
@@ -132,45 +175,48 @@ export default function App() {
     setNeedsClarification(false);
     setClarificationQuestion("");
     setPlanWarnings([]);
+    setPipelineDebug((previous) => ({
+      ...previous,
+      uploadResult: null,
+      analyzeResult: null,
+      planResult: null,
+      errors: []
+    }));
     setLoading((s) => ({ ...s, upload: true }));
     try {
       const payload = await uploadFile(selectedFile);
+      if (!payload?.fileId || typeof payload.fileId !== "string") {
+        throw new Error("Upload completato ma file_id mancante nella risposta API.");
+      }
+      console.log("[pipeline] upload result", payload);
+      console.log("[pipeline] analyze result", payload.analysis);
+      setPipelineDebug((previous) => ({
+        ...previous,
+        uploadResult: payload,
+        analyzeResult: payload.analysis
+      }));
       setUploadPayload(payload);
       setPlanText('{"operations":[]}');
+      await generatePlanForFile(payload.fileId);
     } catch (err) {
-      setError(err.message);
+      setError(logPipelineError("upload", err));
     } finally {
       setLoading((s) => ({ ...s, upload: false }));
     }
   }
 
   async function onGeneratePlan() {
-    if (!uploadPayload?.file_id) return;
+    if (!uploadPayload?.fileId) return;
     setError("");
     setPreviewPayload(null);
     setShowConfirmation(false);
     setNeedsClarification(false);
     setClarificationQuestion("");
-    setLoading((s) => ({ ...s, plan: true }));
-    try {
-      const payload = await generatePlan({
-        fileId: uploadPayload.file_id,
-        prompt,
-        userId
-      });
-      setPlanText(JSON.stringify(payload.plan, null, 2));
-      setPlanWarnings(payload.warnings || []);
-      setNeedsClarification(Boolean(payload.needs_clarification));
-      setClarificationQuestion(payload.clarification_question || "");
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading((s) => ({ ...s, plan: false }));
-    }
+    await generatePlanForFile(uploadPayload.fileId);
   }
 
   async function onApply() {
-    if (!uploadPayload?.file_id || !previewPayload?.preview_available || isLimitReached || needsClarification) return;
+    if (!uploadPayload?.fileId || !previewPayload?.previewAvailable || isLimitReached || needsClarification) return;
     setError("");
     const executablePlan = getExecutablePlanOrShowError();
     if (!executablePlan) {
@@ -179,7 +225,7 @@ export default function App() {
     setLoading((s) => ({ ...s, apply: true }));
     try {
       const payload = await applyTransform({
-        fileId: uploadPayload.file_id,
+        fileId: uploadPayload.fileId,
         userId,
         plan: executablePlan,
         outputFormat
@@ -187,22 +233,22 @@ export default function App() {
       setApplyPayload(payload);
       setResultExplanation(buildHumanResultExplanation(executablePlan));
       setUsage((previous) => ({
-        user_id: userId,
-        usage_count: payload.usage_count,
-        remaining_uses: payload.remaining_uses,
+        userId,
+        usageCount: payload.usageCount,
+        remainingUses: payload.remainingUses,
         limit: previous?.limit ?? 5
       }));
       await refreshUsage();
       setShowConfirmation(false);
     } catch (err) {
-      setError(err.message);
+      setError(logPipelineError("apply", err));
     } finally {
       setLoading((s) => ({ ...s, apply: false }));
     }
   }
 
   async function onOpenConfirmation() {
-    if (!uploadPayload?.file_id || needsClarification) return;
+    if (!uploadPayload?.fileId || needsClarification) return;
     setError("");
     const executablePlan = getExecutablePlanOrShowError({ closeConfirmation: true });
     if (!executablePlan) {
@@ -213,12 +259,12 @@ export default function App() {
     setLoading((s) => ({ ...s, preview: true }));
     try {
       const payload = await previewTransform({
-        fileId: uploadPayload.file_id,
+        fileId: uploadPayload.fileId,
         plan: executablePlan
       });
       setPreviewPayload(payload);
     } catch (err) {
-      setError(err.message);
+      setError(logPipelineError("preview", err));
     } finally {
       setLoading((s) => ({ ...s, preview: false }));
     }
@@ -239,15 +285,15 @@ export default function App() {
 
   const usageLabel = useMemo(() => {
     if (!usage) return "Caricamento utilizzi...";
-    return `${usage.remaining_uses} / ${usage.limit} elaborazioni rimaste`;
+    return `${usage.remainingUses} / ${usage.limit} elaborazioni rimaste`;
   }, [usage]);
 
   const isLimitReached = useMemo(() => {
     if (!usage) return false;
-    return usage.remaining_uses <= 0;
+    return usage.remainingUses <= 0;
   }, [usage]);
 
-  const hasUploadedFile = Boolean(uploadPayload?.file_id);
+  const hasUploadedFile = Boolean(uploadPayload?.fileId);
   const hasNonEmptyPlan = useMemo(() => planText.trim().length > 0, [planText]);
 
   const planHasOperations = useMemo(() => {
@@ -302,7 +348,7 @@ export default function App() {
         {uploadPayload?.analysis && (
           <>
             <p className="muted">
-              Righe: {uploadPayload.analysis.row_count} | Colonne: {uploadPayload.analysis.column_count}
+              Righe: {uploadPayload.analysis.rowCount} | Colonne: {uploadPayload.analysis.columnCount}
             </p>
             <div className="table-wrap">
               <table>
@@ -319,8 +365,8 @@ export default function App() {
                     <tr key={column.name}>
                       <td>{column.name}</td>
                       <td>{column.dtype}</td>
-                      <td>{column.null_count}</td>
-                      <td>{column.sample_values.join(", ")}</td>
+                      <td>{column.nullCount}</td>
+                      <td>{column.sampleValues.join(", ")}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -426,8 +472,8 @@ export default function App() {
 
                 <p className="label">Colonne coinvolte</p>
                 <div className="chip-list">
-                  {previewPayload.impacted_columns.length === 0 && <span className="muted">Nessuna colonna rilevata.</span>}
-                  {previewPayload.impacted_columns.map((column) => (
+                  {previewPayload.impactedColumns.length === 0 && <span className="muted">Nessuna colonna rilevata.</span>}
+                  {previewPayload.impactedColumns.map((column) => (
                     <span key={column} className="chip">
                       {column}
                     </span>
@@ -456,7 +502,7 @@ export default function App() {
                 <p className="label">Preview risultato (max 10 righe)</p>
                 <DataTable rows={previewPayload.analysis.preview} />
 
-                {!previewPayload.preview_available && (
+                {!previewPayload.previewAvailable && (
                   <p className="state-note">Preview non disponibile: applicazione disabilitata.</p>
                 )}
 
@@ -467,7 +513,7 @@ export default function App() {
                   <button
                     className="danger"
                     onClick={onApply}
-                    disabled={!previewPayload.preview_available || loading.apply || isLimitReached || needsClarification}
+                    disabled={!previewPayload.previewAvailable || loading.apply || isLimitReached || needsClarification}
                   >
                     {loading.apply ? "Applicazione..." : "Applica trasformazioni"}
                   </button>
@@ -482,14 +528,14 @@ export default function App() {
         <h2>4) Download Risultato</h2>
         {applyPayload?.analysis ? (
           <>
-            <p className="muted">Output pronto. Uso residuo: {applyPayload.remaining_uses}</p>
+            <p className="muted">Output pronto. Uso residuo: {applyPayload.remainingUses}</p>
             <h3>Risultato in parole semplici</h3>
             <ul className="human-summary">
               {resultExplanation.map((item) => (
                 <li key={item}>{item}</li>
               ))}
             </ul>
-            <a className="download" href={buildDownloadUrl(applyPayload.result_id)}>
+            <a className="download" href={buildDownloadUrl(applyPayload.resultId)}>
               Scarica file trasformato
             </a>
             <h3>Preview Output</h3>
@@ -497,6 +543,29 @@ export default function App() {
           </>
         ) : (
           <p className="muted">Nessun output disponibile. Completa la conferma per applicare il piano.</p>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>Debug Pipeline</h2>
+        <p className="muted">Upload, analisi, piano ed errori recenti.</p>
+        <p className="label">Upload result</p>
+        <pre className="mono">{pipelineDebug.uploadResult ? JSON.stringify(pipelineDebug.uploadResult, null, 2) : "Nessun dato."}</pre>
+        <p className="label">Analyze result</p>
+        <pre className="mono">{pipelineDebug.analyzeResult ? JSON.stringify(pipelineDebug.analyzeResult, null, 2) : "Nessun dato."}</pre>
+        <p className="label">Plan result</p>
+        <pre className="mono">{pipelineDebug.planResult ? JSON.stringify(pipelineDebug.planResult, null, 2) : "Nessun dato."}</pre>
+        <p className="label">Errori</p>
+        {pipelineDebug.errors.length === 0 ? (
+          <p className="muted">Nessun errore registrato.</p>
+        ) : (
+          <ul className="warnings">
+            {pipelineDebug.errors.map((item, idx) => (
+              <li key={`${item.stage}-${idx}`}>
+                [{item.stage}] {item.message}
+              </li>
+            ))}
+          </ul>
         )}
       </section>
 
