@@ -51,9 +51,10 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 ### Config LLM (OpenAI + Kimi compatible)
-- Variabili consigliate (future-proof): `LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL`
-- Compatibilita legacy mantenuta: `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL`
-- Alias Kimi supportati: `KIMI_API_KEY`, `KIMI_MODEL`, `KIMI_BASE_URL`
+- `LLM_PROVIDER`: `openai` oppure `kimi`
+- OpenAI: `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL` (opzionale)
+- Kimi: `KIMI_API_KEY`, `KIMI_MODEL` (default `moonshot-v1-8k`), `KIMI_BASE_URL` (default `https://api.moonshot.cn/v1`)
+- Se `LLM_PROVIDER=kimi` e manca `KIMI_API_KEY`, `/api/plan` risponde con `500 Missing KIMI_API_KEY`
 
 ## Frontend local setup
 ```bash

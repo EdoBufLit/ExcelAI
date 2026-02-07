@@ -22,9 +22,13 @@ def build_services(settings: Settings) -> ServiceContainer:
         file_store=FileStore(settings.data_dir),
         usage_limiter=UsageLimiter(settings.usage_db_path, settings.max_free_uses),
         llm_planner=LLMPlanner(
-            settings.openai_api_key,
-            settings.openai_model,
-            settings.openai_base_url,
+            settings.llm_provider,
+            openai_api_key=settings.openai_api_key,
+            openai_model=settings.openai_model,
+            openai_base_url=settings.openai_base_url,
+            kimi_api_key=settings.kimi_api_key,
+            kimi_model=settings.kimi_model,
+            kimi_base_url=settings.kimi_base_url,
         ),
         analytics_logger=AnalyticsLogger(settings.usage_db_path),
     )

@@ -217,3 +217,39 @@ def test_apply_rejects_empty_or_missing_operations(tmp_path: Path) -> None:
     assert usage_response.status_code == 200
     assert usage_response.json()["usage_count"] == 0
     assert usage_response.json()["remaining_uses"] == 5
+
+
+def test_plan_returns_500_when_kimi_key_missing(tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        usage_db_path=tmp_path / "usage.db",
+        llm_provider="kimi",
+        openai_api_key="sk-openai-should-not-be-used",
+        openai_model="gpt-4.1-mini",
+        kimi_api_key=None,
+        kimi_model="moonshot-v1-8k",
+        kimi_base_url="https://api.moonshot.cn/v1",
+        max_free_uses=5,
+        preview_rows=10,
+        cors_origins=["http://localhost:5173"],
+    )
+    client = TestClient(create_app(settings))
+
+    csv_data = b"name,amount\nanna,10\n"
+    upload_response = client.post(
+        "/api/files/upload",
+        files={"file": ("sample.csv", csv_data, "text/csv")},
+    )
+    assert upload_response.status_code == 200
+    file_id = upload_response.json()["file_id"]
+
+    plan_response = client.post(
+        "/api/plan",
+        json={
+            "file_id": file_id,
+            "prompt": "trim whitespace",
+            "user_id": "tester",
+        },
+    )
+    assert plan_response.status_code == 500
+    assert plan_response.json()["detail"] == "Missing KIMI_API_KEY"

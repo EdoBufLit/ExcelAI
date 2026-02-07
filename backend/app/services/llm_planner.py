@@ -46,17 +46,58 @@ Supported operations:
 """
 
 
+class LLMConfigurationError(RuntimeError):
+    pass
+
+
+class LLMProviderRequestError(RuntimeError):
+    pass
+
+
 class LLMPlanner:
-    def __init__(self, api_key: str | None, model: str, base_url: str | None = None) -> None:
-        self._api_key = api_key
-        self._model = model
-        self._base_url = base_url
-        self._client = OpenAI(api_key=api_key, base_url=base_url) if api_key else None
+    def __init__(
+        self,
+        provider: str,
+        *,
+        openai_api_key: str | None,
+        openai_model: str,
+        openai_base_url: str | None,
+        kimi_api_key: str | None,
+        kimi_model: str,
+        kimi_base_url: str,
+    ) -> None:
+        normalized_provider = provider.strip().lower() if provider else "openai"
+        self._provider = normalized_provider if normalized_provider in {"openai", "kimi"} else "openai"
+
+        if self._provider == "kimi":
+            self._api_key = kimi_api_key
+            self._model = kimi_model
+            self._base_url = kimi_base_url
+            self._client = OpenAI(api_key=kimi_api_key, base_url=kimi_base_url) if kimi_api_key else None
+        else:
+            self._api_key = openai_api_key
+            self._model = openai_model
+            self._base_url = openai_base_url
+            self._client = OpenAI(api_key=openai_api_key, base_url=openai_base_url) if openai_api_key else None
+
+    @property
+    def provider(self) -> str:
+        return self._provider
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @property
+    def base_url(self) -> str | None:
+        return self._base_url
 
     def create_plan(self, prompt: str, analysis: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
         if self._client is None:
+            if self._provider == "kimi":
+                raise LLMConfigurationError("Missing KIMI_API_KEY")
             return self._fallback_plan(prompt, analysis), [
-                "LLM_API_KEY/OPENAI_API_KEY non configurata: uso planner euristico locale.",
+                "OPENAI_API_KEY non configurata: uso planner euristico locale.",
             ]
 
         try:
@@ -81,6 +122,8 @@ class LLMPlanner:
             plan = self._sanitize_plan_payload(json.loads(content))
             return plan, []
         except Exception as error:  # pragma: no cover - external API variability
+            if self._provider == "kimi":
+                raise LLMProviderRequestError(f"Kimi planner request failed: {error}") from error
             fallback = self._fallback_plan(prompt, analysis)
             return fallback, [f"Errore LLM, fallback locale: {error}"]
 
