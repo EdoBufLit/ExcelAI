@@ -19,6 +19,7 @@ MVP web app per trasformare file Excel/CSV con piano JSON generato da LLM e appl
 - Preview risultato
 - Download file trasformato
 - Limite free: massimo 5 trasformazioni per `user_id`
+- Layout Pack XLSX deterministico (tabella Excel, filtri, freeze header, larghezze, formati) senza modifica dei dati
 
 ## Struttura progetto
 ```text
@@ -55,6 +56,7 @@ uvicorn app.main:app --reload --port 8000
 - OpenAI: `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL` (opzionale)
 - Kimi: `KIMI_API_KEY`, `KIMI_MODEL` (default `moonshot-v1-8k`), `KIMI_BASE_URL` (default `https://api.moonshot.cn/v1`)
 - `DEBUG_LLM=true` abilita log della risposta raw del modello (solo debug locale)
+- `LAYOUT_PACK=0` disabilita il formatting XLSX post-export (default: abilitato)
 
 ## Frontend local setup
 ```bash
