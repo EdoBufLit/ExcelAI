@@ -24,6 +24,10 @@ from app.services.transformer import TransformationError, apply_plan
 
 router = APIRouter(prefix="/api", tags=["transform"])
 
+EMPTY_PLAN_OPERATIONS_ERROR = (
+    "Il piano non contiene operazioni. Genera o modifica il piano prima di applicarlo."
+)
+
 
 def _services(request: Request) -> ServiceContainer:
     return request.app.state.services
@@ -139,6 +143,15 @@ def apply_transform(payload: ApplyRequest, request: Request) -> ApplyResponse:
     analysis = None
 
     try:
+        operations = payload.plan.get("operations")
+        if not isinstance(operations, list) or len(operations) == 0:
+            detail = EMPTY_PLAN_OPERATIONS_ERROR
+            clarification_question = payload.plan.get("clarification_question")
+            if isinstance(clarification_question, str) and clarification_question.strip():
+                detail = f"{detail} {clarification_question.strip()}"
+            error_code = "invalid_plan"
+            raise HTTPException(status_code=400, detail=detail)
+
         clarification_error = _clarification_guard(payload.plan)
         if clarification_error:
             error_code = "clarification_required"

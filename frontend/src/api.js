@@ -2,44 +2,63 @@ import { toUiErrorMessage } from "./utils/error-message";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
+function parseJson(raw) {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function ensureObjectPayload(payload, fallbackMessage) {
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    return payload;
+  }
+  throw new Error(
+    `${fallbackMessage}\nRiprova tra poco oppure aggiorna la pagina e ripeti l'operazione.`
+  );
+}
+
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, options);
-  if (!response.ok) {
-    const raw = await response.text();
-    let errorDetail = raw;
+  const bodyBlob = await response.blob();
+  const raw = await bodyBlob.text();
+  const payload = parseJson(raw);
 
-    try {
-      const payload = JSON.parse(raw);
-      errorDetail =
-        typeof payload?.detail === "string"
-          ? payload.detail
-          : JSON.stringify(payload);
-    } catch {
-      // raw non era JSON, va bene cosi
-    }
+  if (!response.ok) {
+    const errorDetail =
+      typeof payload?.detail === "string"
+        ? payload.detail
+        : raw || `Richiesta fallita (HTTP ${response.status}).`;
 
     throw new Error(toUiErrorMessage(errorDetail, response.status));
   }
-  return response;
+  return {
+    response,
+    bodyBlob,
+    raw,
+    payload
+  };
 }
 
 export async function uploadFile(file) {
   const formData = new FormData();
   formData.append("file", file);
-  const response = await request("/api/files/upload", {
+  const result = await request("/api/files/upload", {
     method: "POST",
     body: formData
   });
-  return response.json();
+  return ensureObjectPayload(result.payload, "Il server ha risposto con dati non validi durante l'upload.");
 }
 
 export async function fetchUsage(userId) {
-  const response = await request(`/api/usage/${encodeURIComponent(userId)}`);
-  return response.json();
+  const result = await request(`/api/usage/${encodeURIComponent(userId)}`);
+  return ensureObjectPayload(result.payload, "Non riesco a leggere lo stato degli utilizzi.");
 }
 
 export async function generatePlan({ fileId, prompt, userId }) {
-  const response = await request("/api/plan", {
+  const result = await request("/api/plan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -48,11 +67,11 @@ export async function generatePlan({ fileId, prompt, userId }) {
       user_id: userId
     })
   });
-  return response.json();
+  return ensureObjectPayload(result.payload, "Il piano generato non e in un formato valido.");
 }
 
 export async function applyTransform({ fileId, userId, plan, outputFormat }) {
-  const response = await request("/api/transform", {
+  const result = await request("/api/transform", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -62,11 +81,11 @@ export async function applyTransform({ fileId, userId, plan, outputFormat }) {
       output_format: outputFormat
     })
   });
-  return response.json();
+  return ensureObjectPayload(result.payload, "La risposta dell'applicazione trasformazioni non e valida.");
 }
 
 export async function previewTransform({ fileId, plan }) {
-  const response = await request("/api/transform/preview", {
+  const result = await request("/api/transform/preview", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -74,7 +93,7 @@ export async function previewTransform({ fileId, plan }) {
       plan
     })
   });
-  return response.json();
+  return ensureObjectPayload(result.payload, "La preview ricevuta non e valida.");
 }
 
 export function buildDownloadUrl(resultId) {

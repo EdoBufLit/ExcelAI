@@ -13,6 +13,8 @@ import { toUiErrorMessage } from "./utils/error-message";
 import { buildHumanResultExplanation } from "./utils/result-explanation";
 
 const USER_KEY = "excel_ai_transformer_user_id";
+const EMPTY_PLAN_OPERATIONS_MESSAGE =
+  "Il piano non contiene operazioni. Genera o modifica il piano prima di applicarlo.";
 
 function getUserId() {
   const existing = localStorage.getItem(USER_KEY);
@@ -48,6 +50,14 @@ function DataTable({ rows }) {
       </table>
     </div>
   );
+}
+
+function parsePlanText(rawPlanText) {
+  try {
+    return { plan: JSON.parse(rawPlanText), isValidJson: true };
+  } catch {
+    return { plan: null, isValidJson: false };
+  }
 }
 
 export default function App() {
@@ -141,15 +151,18 @@ export default function App() {
   async function onApply() {
     if (!uploadPayload?.file_id || !previewPayload?.preview_available || isLimitReached || needsClarification) return;
     setError("");
+    const parsedPlanResult = parsePlanText(planText);
+    if (!parsedPlanResult.isValidJson) {
+      setError(toUiErrorMessage("invalid_plan_json"));
+      return;
+    }
+    if (!Array.isArray(parsedPlanResult.plan?.operations) || parsedPlanResult.plan.operations.length === 0) {
+      setError(EMPTY_PLAN_OPERATIONS_MESSAGE);
+      return;
+    }
     setLoading((s) => ({ ...s, apply: true }));
     try {
-      let parsedPlan;
-      try {
-        parsedPlan = JSON.parse(planText);
-      } catch {
-        setError(toUiErrorMessage("invalid_plan_json"));
-        return;
-      }
+      const parsedPlan = parsedPlanResult.plan;
       const payload = await applyTransform({
         fileId: uploadPayload.file_id,
         userId,
@@ -176,20 +189,24 @@ export default function App() {
   async function onOpenConfirmation() {
     if (!uploadPayload?.file_id || needsClarification) return;
     setError("");
+    const parsedPlanResult = parsePlanText(planText);
+    if (!parsedPlanResult.isValidJson) {
+      setError(toUiErrorMessage("invalid_plan_json"));
+      setShowConfirmation(false);
+      return;
+    }
+    if (!Array.isArray(parsedPlanResult.plan?.operations) || parsedPlanResult.plan.operations.length === 0) {
+      setError(EMPTY_PLAN_OPERATIONS_MESSAGE);
+      setShowConfirmation(false);
+      return;
+    }
     setShowConfirmation(true);
     setPreviewPayload(null);
     setLoading((s) => ({ ...s, preview: true }));
     try {
-      let parsedPlan;
-      try {
-        parsedPlan = JSON.parse(planText);
-      } catch {
-        setError(toUiErrorMessage("invalid_plan_json"));
-        return;
-      }
       const payload = await previewTransform({
         fileId: uploadPayload.file_id,
-        plan: parsedPlan
+        plan: parsedPlanResult.plan
       });
       setPreviewPayload(payload);
     } catch (err) {
@@ -221,6 +238,18 @@ export default function App() {
     if (!usage) return false;
     return usage.remaining_uses <= 0;
   }, [usage]);
+
+  const hasUploadedFile = Boolean(uploadPayload?.file_id);
+  const hasNonEmptyPlan = useMemo(() => planText.trim().length > 0, [planText]);
+
+  const planHasOperations = useMemo(() => {
+    if (!hasNonEmptyPlan) return false;
+    const parsedPlanResult = parsePlanText(planText);
+    if (!parsedPlanResult.isValidJson) return false;
+    return Array.isArray(parsedPlanResult.plan?.operations) && parsedPlanResult.plan.operations.length > 0;
+  }, [planText, hasNonEmptyPlan]);
+
+  const canOpenConfirmation = hasUploadedFile && hasNonEmptyPlan && planHasOperations;
 
   function onUpgradeClick() {
     setError("Limite free raggiunto. Passa al piano Pro (billing in arrivo).");
@@ -355,6 +384,7 @@ export default function App() {
 
       <section className="card">
         <h2>3) Conferma Prima Dell'applicazione</h2>
+        {!planHasOperations && <p className="state-note">{EMPTY_PLAN_OPERATIONS_MESSAGE}</p>}
         {isLimitReached && (
           <div className="limit-block">
             <p className="limit-text">Hai raggiunto il limite di utilizzi gratuiti. L'esecuzione e bloccata.</p>
@@ -368,7 +398,10 @@ export default function App() {
             <option value="xlsx">XLSX</option>
             <option value="csv">CSV</option>
           </select>
-          <button onClick={onOpenConfirmation} disabled={!uploadPayload || loading.preview || isLimitReached || needsClarification}>
+          <button
+            onClick={onOpenConfirmation}
+            disabled={!canOpenConfirmation || loading.preview || isLimitReached || needsClarification}
+          >
             {loading.preview ? "Preparazione preview..." : "Apri Conferma"}
           </button>
         </div>

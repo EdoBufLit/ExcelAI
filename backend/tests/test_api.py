@@ -171,3 +171,49 @@ def test_ambiguous_prompt_requires_clarification(tmp_path: Path) -> None:
     )
     assert apply_response.status_code == 400
     assert "cliente o per data" in apply_response.json()["detail"]
+
+
+def test_apply_rejects_empty_or_missing_operations(tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        usage_db_path=tmp_path / "usage.db",
+        openai_api_key=None,
+        openai_model="gpt-4.1-mini",
+        max_free_uses=5,
+        preview_rows=10,
+        cors_origins=["http://localhost:5173"],
+    )
+    client = TestClient(create_app(settings))
+
+    csv_data = b"name,amount\nanna,10\n"
+    upload_response = client.post(
+        "/api/files/upload",
+        files={"file": ("sample.csv", csv_data, "text/csv")},
+    )
+    assert upload_response.status_code == 200
+    file_id = upload_response.json()["file_id"]
+
+    bad_plans = [
+        {},
+        {"operations": []},
+    ]
+    for bad_plan in bad_plans:
+        apply_response = client.post(
+            "/api/transform",
+            json={
+                "file_id": file_id,
+                "user_id": "tester",
+                "output_format": "csv",
+                "plan": bad_plan,
+            },
+        )
+        assert apply_response.status_code == 400
+        assert (
+            apply_response.json()["detail"]
+            == "Il piano non contiene operazioni. Genera o modifica il piano prima di applicarlo."
+        )
+
+    usage_response = client.get("/api/usage/tester")
+    assert usage_response.status_code == 200
+    assert usage_response.json()["usage_count"] == 0
+    assert usage_response.json()["remaining_uses"] == 5
