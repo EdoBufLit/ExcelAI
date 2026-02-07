@@ -119,6 +119,20 @@ export async function generatePlan({ fileId, prompt, userId }) {
   return ensureObjectPayload(result.payload, "Il piano generato non e in un formato valido.");
 }
 
+export async function clarifyPlan({ fileId, prompt, clarifyId, answer }) {
+  const result = await request("/api/plan/clarify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      file_id: fileId,
+      prompt,
+      clarify_id: clarifyId,
+      answer
+    })
+  });
+  return ensureObjectPayload(result.payload, "La risposta di chiarimento non e in un formato valido.");
+}
+
 export async function applyTransform({ fileId, userId, plan, outputFormat }) {
   const result = await request("/api/transform", {
     method: "POST",

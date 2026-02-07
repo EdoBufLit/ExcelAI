@@ -232,6 +232,23 @@ textarea {
   font-weight: 600;
 }
 
+.clarify-choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 0.55rem;
+}
+
+.clarify-choice {
+  background: #fff;
+  color: #7a2f00;
+  border: 1px solid #ffc79f;
+}
+
+.clarify-choice:hover {
+  background: #ffe7d5;
+}
+
 .preset-wrap {
   margin-bottom: 0.45rem;
 }
@@ -416,6 +433,21 @@ th {
   border-color: #f3c4c2;
   background: #fff0f0;
   color: #8d2320;
+  white-space: pre-line;
+}
+
+.toast {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 50;
+  max-width: min(520px, 92vw);
+  border: 1px solid #f3c4c2;
+  background: #fff0f0;
+  color: #8d2320;
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
+  box-shadow: var(--shadow);
   white-space: pre-line;
 }
 

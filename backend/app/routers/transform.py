@@ -3,13 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 
 from app.models import (
     ApplyRequest,
     ApplyResponse,
+    ClarifyRequest,
+    ClarifyResponse,
+    PlanUnion,
     PlanRequest,
     PlanResponse,
     PreviewRequest,
@@ -64,6 +68,31 @@ def _clarification_guard(plan: dict[str, Any]) -> str | None:
     return None
 
 
+def _to_plan_union(payload: dict[str, Any]) -> PlanUnion:
+    if payload.get("type") == "plan":
+        raw_plan = payload.get("plan")
+        return PlanResponse(
+            type="plan",
+            plan=raw_plan if isinstance(raw_plan, dict) else {"operations": []},
+            warnings=payload.get("warnings", []),
+        )
+
+    raw_choices = payload.get("choices")
+    choices = [choice for choice in raw_choices if isinstance(choice, str)] if isinstance(raw_choices, list) else []
+    clarify_id = payload.get("clarify_id")
+    if not isinstance(clarify_id, str) or not clarify_id.strip():
+        clarify_id = uuid4().hex
+    question = payload.get("question")
+    if not isinstance(question, str) or not question.strip():
+        question = "La richiesta non e ancora chiara. Vuoi procedere con impostazioni consigliate?"
+    return ClarifyResponse(
+        type="clarify",
+        question=question.strip(),
+        choices=choices,
+        clarify_id=clarify_id.strip(),
+    )
+
+
 @router.get("/usage/{user_id}", response_model=UsageResponse)
 def get_usage(user_id: str, request: Request) -> UsageResponse:
     services = _services(request)
@@ -102,8 +131,8 @@ def upload_file(request: Request, file: UploadFile = File(...)) -> UploadRespons
     )
 
 
-@router.post("/plan", response_model=PlanResponse)
-def generate_plan(payload: PlanRequest, request: Request) -> PlanResponse | JSONResponse:
+@router.post("/plan", response_model=PlanUnion)
+def generate_plan(payload: PlanRequest, request: Request) -> PlanUnion:
     services = _services(request)
     settings = request.app.state.settings
     try:
@@ -115,21 +144,28 @@ def generate_plan(payload: PlanRequest, request: Request) -> PlanResponse | JSON
 
     analysis = build_analysis(df, settings.preview_rows)
     planning_result = services.llm_planner.create_plan(payload.prompt, analysis_for_llm(analysis))
-    if planning_result.error is not None:
-        return JSONResponse(status_code=422, content=planning_result.error)
+    return _to_plan_union(planning_result)
 
-    plan_payload = planning_result.plan
-    warnings = planning_result.warnings
-    return PlanResponse(
-        plan={
-            "needs_clarification": bool(plan_payload.get("needs_clarification", False)),
-            "clarification_question": plan_payload.get("clarification_question"),
-            "operations": plan_payload.get("operations", []),
-        },
-        warnings=warnings,
-        needs_clarification=bool(plan_payload.get("needs_clarification", False)),
-        clarification_question=plan_payload.get("clarification_question"),
+
+@router.post("/plan/clarify", response_model=PlanUnion)
+def clarify_plan(payload: ClarifyRequest, request: Request) -> PlanUnion:
+    services = _services(request)
+    settings = request.app.state.settings
+    try:
+        df = services.file_store.load_upload_df(payload.file_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="File not found.") from error
+    except Exception as error:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"Unable to read source file: {error}") from error
+
+    analysis = build_analysis(df, settings.preview_rows)
+    planning_result = services.llm_planner.create_plan_from_clarification(
+        prompt=payload.prompt,
+        analysis=analysis_for_llm(analysis),
+        clarify_id=payload.clarify_id,
+        answer=payload.answer,
     )
+    return _to_plan_union(planning_result)
 
 
 @router.post("/transform", response_model=ApplyResponse)

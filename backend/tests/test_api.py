@@ -5,7 +5,6 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
-from app.services.llm_planner import PlanGenerationResult
 
 
 def test_upload_plan_transform_flow(tmp_path: Path) -> None:
@@ -18,7 +17,13 @@ def test_upload_plan_transform_flow(tmp_path: Path) -> None:
         preview_rows=10,
         cors_origins=["http://localhost:5173"],
     )
-    client = TestClient(create_app(settings))
+    app = create_app(settings)
+    app.state.services.llm_planner.create_plan = lambda prompt, analysis: {
+        "type": "plan",
+        "plan": {"operations": [{"type": "change_case", "columns": ["name"], "case": "upper"}]},
+        "warnings": [],
+    }
+    client = TestClient(app)
 
     csv_data = b"name,amount,tax\nanna,10,1\nmario,20,2\n"
     upload_response = client.post(
@@ -37,6 +42,7 @@ def test_upload_plan_transform_flow(tmp_path: Path) -> None:
         },
     )
     assert plan_response.status_code == 200
+    assert plan_response.json()["type"] == "plan"
     plan = plan_response.json()["plan"]
     assert "operations" in plan
 
@@ -120,13 +126,18 @@ def test_ambiguous_prompt_requires_clarification(tmp_path: Path) -> None:
         cors_origins=["http://localhost:5173"],
     )
     app = create_app(settings)
-    app.state.services.llm_planner.create_plan = lambda prompt, analysis: PlanGenerationResult(
-        plan={
-            "needs_clarification": True,
-            "clarification_question": "Intendi raggruppare per cliente o per data?",
-            "operations": [{"type": "sort_rows", "by": ["amount"], "ascending": False}],
-        },
-        warnings=[],
+    app.state.services.llm_planner.create_plan = lambda prompt, analysis: {
+        "type": "clarify",
+        "question": "Intendi raggruppare per cliente o per data?",
+        "choices": ["Per cliente", "Per data"],
+        "clarify_id": "clarify-test-1",
+    }
+    app.state.services.llm_planner.create_plan_from_clarification = (
+        lambda prompt, analysis, clarify_id, answer: {
+            "type": "plan",
+            "plan": {"operations": [{"type": "sort_rows", "by": ["amount"], "ascending": False}]},
+            "warnings": [],
+        }
     )
     client = TestClient(app)
 
@@ -148,30 +159,22 @@ def test_ambiguous_prompt_requires_clarification(tmp_path: Path) -> None:
     )
     assert plan_response.status_code == 200
     plan_payload = plan_response.json()
-    assert plan_payload["needs_clarification"] is True
-    assert plan_payload["clarification_question"] == "Intendi raggruppare per cliente o per data?"
+    assert plan_payload["type"] == "clarify"
+    assert plan_payload["question"] == "Intendi raggruppare per cliente o per data?"
+    assert plan_payload["clarify_id"] == "clarify-test-1"
 
-    preview_response = client.post(
-        "/api/transform/preview",
+    clarify_response = client.post(
+        "/api/plan/clarify",
         json={
             "file_id": file_id,
-            "plan": plan_payload["plan"],
+            "prompt": "fammi un riepilogo",
+            "clarify_id": plan_payload["clarify_id"],
+            "answer": "Per cliente",
         },
     )
-    assert preview_response.status_code == 400
-    assert "cliente o per data" in preview_response.json()["detail"]
-
-    apply_response = client.post(
-        "/api/transform",
-        json={
-            "file_id": file_id,
-            "user_id": "tester",
-            "output_format": "csv",
-            "plan": plan_payload["plan"],
-        },
-    )
-    assert apply_response.status_code == 400
-    assert "cliente o per data" in apply_response.json()["detail"]
+    assert clarify_response.status_code == 200
+    assert clarify_response.json()["type"] == "plan"
+    assert len(clarify_response.json()["plan"]["operations"]) == 1
 
 
 def test_apply_rejects_empty_or_missing_operations(tmp_path: Path) -> None:
@@ -220,7 +223,7 @@ def test_apply_rejects_empty_or_missing_operations(tmp_path: Path) -> None:
     assert usage_response.json()["remaining_uses"] == 5
 
 
-def test_plan_returns_422_when_kimi_key_missing(tmp_path: Path) -> None:
+def test_plan_returns_clarify_when_kimi_key_missing(tmp_path: Path) -> None:
     settings = Settings(
         data_dir=tmp_path / "data",
         usage_db_path=tmp_path / "usage.db",
@@ -252,16 +255,14 @@ def test_plan_returns_422_when_kimi_key_missing(tmp_path: Path) -> None:
             "user_id": "tester",
         },
     )
-    assert plan_response.status_code == 422
+    assert plan_response.status_code == 200
     payload = plan_response.json()
-    assert payload["error"] == "plan_generation_failed"
-    assert payload["reason"] == "missing_kimi_api_key"
-    assert payload["llm_provider"] == "kimi"
-    assert payload["model"] == "moonshot-v1-8k"
-    assert payload["has_fallback"] is False
+    assert payload["type"] == "clarify"
+    assert "question" in payload
+    assert "clarify_id" in payload
 
 
-def test_plan_returns_422_when_llm_returns_empty_plan(tmp_path: Path) -> None:
+def test_plan_returns_clarify_when_llm_returns_empty_plan(tmp_path: Path) -> None:
     settings = Settings(
         data_dir=tmp_path / "data",
         usage_db_path=tmp_path / "usage.db",
@@ -277,7 +278,7 @@ def test_plan_returns_422_when_llm_returns_empty_plan(tmp_path: Path) -> None:
     class _FakeCompletions:
         def create(self, **kwargs):
             class _Message:
-                content = '{"operations":[]}'
+                content = '{"type":"plan","plan":{"operations":[]}}'
 
             class _Choice:
                 message = _Message()
@@ -311,9 +312,8 @@ def test_plan_returns_422_when_llm_returns_empty_plan(tmp_path: Path) -> None:
             "user_id": "tester",
         },
     )
-    assert plan_response.status_code == 422
+    assert plan_response.status_code == 200
     payload = plan_response.json()
-    assert payload["error"] == "plan_generation_failed"
-    assert payload["reason"] == "empty_plan"
-    assert payload["has_fallback"] is False
-    assert "raw_output" in payload
+    assert payload["type"] == "clarify"
+    assert "question" in payload
+    assert "clarify_id" in payload

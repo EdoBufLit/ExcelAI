@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
-import re
-from dataclasses import dataclass, field
 from typing import Any
+from uuid import uuid4
 
 from openai import OpenAI
 
@@ -13,29 +12,42 @@ from app.services.transformer import SUPPORTED_OPERATIONS
 
 logger = logging.getLogger(__name__)
 
+GENERIC_CLARIFY_QUESTION = "La richiesta non e ancora chiara. Vuoi procedere con impostazioni consigliate?"
+GENERIC_CLARIFY_CHOICES = [
+    "Si, usa impostazioni consigliate",
+    "No, preferisco specificare meglio",
+]
+
 SYSTEM_PROMPT = """You are an expert data transformation planner.
-Return ONLY valid JSON in this exact structure:
+Return ONLY valid JSON and ONLY one of these two shapes:
+
+1) Plan:
 {
-  "needs_clarification": false,
-  "clarification_question": null,
-  "operations": [
-    {
-      "type": "operation_name",
-      "...": "operation specific fields"
-    }
-  ]
+  "type": "plan",
+  "plan": {
+    "operations": [
+      {
+        "type": "operation_name",
+        "...": "operation specific fields"
+      }
+    ]
+  }
+}
+
+2) Clarify:
+{
+  "type": "clarify",
+  "question": "single concise question",
+  "choices": ["option A", "option B"],
+  "clarify_id": "optional-id"
 }
 
 Rules:
+- Return JSON only. No markdown. No prose.
 - Use only supported operation types.
-- Never include code, Python expressions, SQL, or freeform text.
-- Keep plans minimal and deterministic.
-- If the request is ambiguous or missing critical details, set:
-  - "needs_clarification": true
-  - "clarification_question": a single direct question with concrete options
-  - "operations": []
-- Example clarification question:
-  "Intendi raggruppare per cliente o per data?"
+- If request is ambiguous or non-deterministic, return type="clarify".
+- For type="plan", operations must be non-empty and deterministic.
+- For type="clarify", include 2-4 concrete choices when possible.
 
 Supported operations:
 - rename_column: {"type":"rename_column","from":"old","to":"new"}
@@ -50,19 +62,6 @@ Supported operations:
 """
 
 
-@dataclass(slots=True)
-class PlanGenerationResult:
-    plan: dict[str, Any] = field(
-        default_factory=lambda: {
-            "needs_clarification": False,
-            "clarification_question": None,
-            "operations": [],
-        }
-    )
-    warnings: list[str] = field(default_factory=list)
-    error: dict[str, Any] | None = None
-
-
 class LLMPlanner:
     def __init__(
         self,
@@ -74,9 +73,11 @@ class LLMPlanner:
         kimi_api_key: str | None,
         kimi_model: str,
         kimi_base_url: str,
+        debug_llm: bool = False,
     ) -> None:
         normalized_provider = provider.strip().lower() if provider else "openai"
         self._provider = normalized_provider if normalized_provider in {"openai", "kimi"} else "openai"
+        self._debug_llm = debug_llm
 
         if self._provider == "kimi":
             self._api_key = kimi_api_key
@@ -101,7 +102,32 @@ class LLMPlanner:
     def base_url(self) -> str | None:
         return self._base_url
 
-    def create_plan(self, prompt: str, analysis: dict[str, Any]) -> PlanGenerationResult:
+    def create_plan(self, prompt: str, analysis: dict[str, Any]) -> dict[str, Any]:
+        return self._create_plan_internal(prompt=prompt, analysis=analysis, clarify_id=None, answer=None)
+
+    def create_plan_from_clarification(
+        self,
+        *,
+        prompt: str,
+        analysis: dict[str, Any],
+        clarify_id: str,
+        answer: str,
+    ) -> dict[str, Any]:
+        return self._create_plan_internal(
+            prompt=prompt,
+            analysis=analysis,
+            clarify_id=clarify_id,
+            answer=answer,
+        )
+
+    def _create_plan_internal(
+        self,
+        *,
+        prompt: str,
+        analysis: dict[str, Any],
+        clarify_id: str | None,
+        answer: str | None,
+    ) -> dict[str, Any]:
         logger.info(
             "LLM plan request start: provider=%s model=%s base_url=%s",
             self._provider,
@@ -110,43 +136,24 @@ class LLMPlanner:
         )
 
         fallback_triggered = False
-        raw_output = ""
-        upstream_status: int | None = None
+        if self._client is None:
+            fallback_triggered = True
+            logger.info(
+                "LLM fallback triggered: provider=%s model=%s has_fallback=%s",
+                self._provider,
+                self._model,
+                fallback_triggered,
+            )
+            return self._clarify_response(
+                question=GENERIC_CLARIFY_QUESTION,
+                choices=GENERIC_CLARIFY_CHOICES,
+                clarify_id=clarify_id,
+            )
 
+        llm_raw = ""
         try:
-            if self._client is None:
-                if self._provider == "kimi":
-                    logger.info(
-                        "LLM fallback triggered: provider=%s model=%s has_fallback=%s",
-                        self._provider,
-                        self._model,
-                        False,
-                    )
-                    return PlanGenerationResult(
-                        error=self._failure_payload(
-                            reason="missing_kimi_api_key",
-                            has_fallback=False,
-                        )
-                    )
-
-                fallback_triggered = True
-                fallback_plan = self._fallback_plan(prompt, analysis)
-                logger.info(
-                    "LLM fallback triggered: provider=%s model=%s has_fallback=%s",
-                    self._provider,
-                    self._model,
-                    fallback_triggered,
-                )
-                return self._result_from_plan(
-                    plan=fallback_plan,
-                    warnings=["OPENAI_API_KEY non configurata: uso planner euristico locale."],
-                    raw_output=json.dumps(fallback_plan, ensure_ascii=False),
-                    has_fallback=True,
-                )
-
             response = self._client.chat.completions.create(
                 model=self._model,
-                temperature=1,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
@@ -156,22 +163,44 @@ class LLMPlanner:
                             {
                                 "prompt": prompt,
                                 "dataset_analysis": analysis,
+                                "clarification": (
+                                    {"clarify_id": clarify_id, "answer": answer}
+                                    if clarify_id and answer
+                                    else None
+                                ),
                             }
                         ),
                     },
                 ],
+                temperature=1 if self._provider == "kimi" else 0.1,
             )
-            raw_output = response.choices[0].message.content or '{"operations":[]}'
-            parsed_payload = json.loads(raw_output)
-            plan = self._sanitize_plan_payload(parsed_payload)
+            llm_raw = response.choices[0].message.content or ""
+            if self._debug_llm:
+                logger.debug("LLM raw output: %s", llm_raw)
 
+            parsed = self._parse_json_payload(llm_raw)
+            if not isinstance(parsed, dict):
+                fallback_triggered = True
+                logger.info(
+                    "LLM fallback triggered: provider=%s model=%s has_fallback=%s",
+                    self._provider,
+                    self._model,
+                    fallback_triggered,
+                )
+                return self._clarify_response(
+                    question=GENERIC_CLARIFY_QUESTION,
+                    choices=GENERIC_CLARIFY_CHOICES,
+                    clarify_id=clarify_id,
+                )
+
+            normalized = self._normalize_llm_payload(parsed, llm_raw=llm_raw, clarify_id=clarify_id)
             logger.info(
                 "LLM fallback triggered: provider=%s model=%s has_fallback=%s",
                 self._provider,
                 self._model,
                 fallback_triggered,
             )
-            return self._result_from_plan(plan=plan, warnings=[], raw_output=raw_output, has_fallback=False)
+            return normalized
         except Exception as error:  # pragma: no cover - external API variability
             upstream_status = self._extract_status_code(error)
             logger.warning(
@@ -181,88 +210,102 @@ class LLMPlanner:
                 upstream_status,
                 str(error),
             )
-
             if upstream_status in {401, 403}:
-                logger.info(
-                    "LLM fallback triggered: provider=%s model=%s has_fallback=%s",
-                    self._provider,
-                    self._model,
-                    False,
-                )
-                return PlanGenerationResult(
-                    error=self._failure_payload(
-                        reason="invalid_llm_auth",
-                        has_fallback=False,
-                    )
-                )
-
-            if self._provider == "openai":
                 fallback_triggered = True
-                fallback_plan = self._fallback_plan(prompt, analysis)
                 logger.info(
                     "LLM fallback triggered: provider=%s model=%s has_fallback=%s",
                     self._provider,
                     self._model,
                     fallback_triggered,
                 )
-                return self._result_from_plan(
-                    plan=fallback_plan,
-                    warnings=[f"Errore LLM, fallback locale: {error}"],
-                    raw_output=json.dumps(fallback_plan, ensure_ascii=False),
-                    has_fallback=True,
+                return self._clarify_response(
+                    question="Non riesco ad autenticarmi al provider LLM. Vuoi riprovare con un prompt piu specifico?",
+                    choices=["Riprova ora", "Modifica prompt"],
+                    clarify_id=clarify_id,
                 )
 
+            fallback_triggered = True
             logger.info(
                 "LLM fallback triggered: provider=%s model=%s has_fallback=%s",
                 self._provider,
                 self._model,
-                False,
+                fallback_triggered,
             )
-            return PlanGenerationResult(
-                error=self._failure_payload(
-                    reason="llm_request_failed",
-                    has_fallback=False,
-                )
+            return self._clarify_response(
+                question=GENERIC_CLARIFY_QUESTION,
+                choices=GENERIC_CLARIFY_CHOICES,
+                clarify_id=clarify_id,
             )
 
-    def _result_from_plan(
+    def _normalize_llm_payload(
         self,
+        payload: dict[str, Any],
         *,
-        plan: dict[str, Any],
-        warnings: list[str],
-        raw_output: str,
-        has_fallback: bool,
-    ) -> PlanGenerationResult:
-        operations = plan.get("operations")
-        if not isinstance(operations, list) or len(operations) == 0:
-            return PlanGenerationResult(
-                warnings=warnings,
-                error=self._failure_payload(
-                    reason="empty_plan",
-                    has_fallback=has_fallback,
-                    raw_output=raw_output,
-                ),
-            )
-
-        return PlanGenerationResult(plan=plan, warnings=warnings)
-
-    def _failure_payload(
-        self,
-        *,
-        reason: str,
-        has_fallback: bool,
-        raw_output: str | None = None,
+        llm_raw: str,
+        clarify_id: str | None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "error": "plan_generation_failed",
-            "reason": reason,
-            "llm_provider": self._provider,
-            "model": self._model,
-            "has_fallback": has_fallback,
+        response_type = payload.get("type")
+        if response_type == "clarify":
+            question = payload.get("question")
+            choices = payload.get("choices")
+            raw_clarify_id = payload.get("clarify_id")
+            normalized_choices = self._normalize_choices(choices)
+            return self._clarify_response(
+                question=question if isinstance(question, str) and question.strip() else GENERIC_CLARIFY_QUESTION,
+                choices=normalized_choices or GENERIC_CLARIFY_CHOICES,
+                clarify_id=raw_clarify_id if isinstance(raw_clarify_id, str) else clarify_id,
+            )
+
+        if response_type == "plan":
+            raw_plan = payload.get("plan")
+            sanitized_plan = self._sanitize_plan_payload(raw_plan)
+            operations = sanitized_plan.get("operations")
+            if isinstance(operations, list) and len(operations) > 0:
+                return {
+                    "type": "plan",
+                    "plan": sanitized_plan,
+                    "warnings": [],
+                }
+
+            if self._debug_llm:
+                logger.debug("LLM returned empty plan payload: %s", self._truncate(llm_raw, limit=500))
+            return self._clarify_response(
+                question=GENERIC_CLARIFY_QUESTION,
+                choices=GENERIC_CLARIFY_CHOICES,
+                clarify_id=clarify_id,
+            )
+
+        if self._debug_llm:
+            logger.debug("LLM payload without valid type: %s", self._truncate(llm_raw, limit=500))
+        return self._clarify_response(
+            question=GENERIC_CLARIFY_QUESTION,
+            choices=GENERIC_CLARIFY_CHOICES,
+            clarify_id=clarify_id,
+        )
+
+    def _clarify_response(
+        self,
+        *,
+        question: str,
+        choices: list[str],
+        clarify_id: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "type": "clarify",
+            "question": question.strip(),
+            "choices": choices[:4],
+            "clarify_id": clarify_id.strip() if isinstance(clarify_id, str) and clarify_id.strip() else uuid4().hex,
         }
-        if reason == "empty_plan" and raw_output is not None:
-            payload["raw_output"] = self._truncate(raw_output, limit=500)
-        return payload
+
+    @staticmethod
+    def _normalize_choices(raw_choices: Any) -> list[str]:
+        if not isinstance(raw_choices, list):
+            return []
+        choices: list[str] = []
+        for choice in raw_choices:
+            if isinstance(choice, str) and choice.strip():
+                choices.append(choice.strip())
+        return choices
 
     @staticmethod
     def _extract_status_code(error: Exception) -> int | None:
@@ -276,73 +319,40 @@ class LLMPlanner:
         return None
 
     @staticmethod
+    def _parse_json_payload(raw_content: str) -> dict[str, Any] | None:
+        try:
+            parsed = json.loads(raw_content)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            pass
+
+        if not raw_content:
+            return None
+
+        start = raw_content.find("{")
+        end = raw_content.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+
+        candidate = raw_content[start : end + 1]
+        try:
+            parsed = json.loads(candidate)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+
+    @staticmethod
     def _truncate(value: str, *, limit: int) -> str:
         if len(value) <= limit:
             return value
         return f"{value[:limit]}...(truncated)"
 
-    def _fallback_plan(self, prompt: str, analysis: dict[str, Any]) -> dict[str, Any]:
-        prompt_low = prompt.lower()
-        string_columns = [
-            column["name"]
-            for column in analysis.get("columns", [])
-            if "object" in column.get("dtype", "") or "string" in column.get("dtype", "")
-        ]
-        numeric_columns = [
-            column["name"]
-            for column in analysis.get("columns", [])
-            if any(tag in column.get("dtype", "") for tag in ("int", "float"))
-        ]
-
-        operations: list[dict[str, Any]] = []
-        if any(keyword in prompt_low for keyword in ("trim", "spazi", "whitespace")) and string_columns:
-            operations.append({"type": "trim_whitespace", "columns": string_columns[:3]})
-
-        if any(keyword in prompt_low for keyword in ("uppercase", "maiusc", "upper")) and string_columns:
-            operations.append({"type": "change_case", "columns": string_columns[:2], "case": "upper"})
-
-        sort_match = re.search(r"sort(?: by)? ([a-zA-Z0-9_ ]+)", prompt_low)
-        if sort_match:
-            raw_column = sort_match.group(1).strip()
-            for column in analysis.get("columns", []):
-                if column["name"].lower() == raw_column:
-                    operations.append({"type": "sort_rows", "by": [column["name"]], "ascending": True})
-                    break
-
-        if "somma" in prompt_low or "sum" in prompt_low:
-            if len(numeric_columns) >= 2:
-                operations.append(
-                    {
-                        "type": "derive_numeric",
-                        "left_column": numeric_columns[0],
-                        "right_column": numeric_columns[1],
-                        "new_column": "sum_result",
-                        "operator": "add",
-                        "round": 2,
-                    }
-                )
-
-        return self._sanitize_plan_payload(
-            {
-                "needs_clarification": False,
-                "clarification_question": None,
-                "operations": operations,
-            }
-        )
-
     @staticmethod
     def _sanitize_plan_payload(raw_plan: Any) -> dict[str, Any]:
         if not isinstance(raw_plan, dict):
-            return {
-                "needs_clarification": False,
-                "clarification_question": None,
-                "operations": [],
-            }
+            return {"operations": []}
 
         operations = raw_plan.get("operations")
-        needs_clarification = bool(raw_plan.get("needs_clarification", False))
-        raw_question = raw_plan.get("clarification_question")
-        question = raw_question.strip() if isinstance(raw_question, str) else None
         if not isinstance(operations, list):
             operations = []
 
@@ -355,16 +365,4 @@ class LLMPlanner:
                 continue
             safe_operations.append(operation)
 
-        if needs_clarification:
-            return {
-                "needs_clarification": True,
-                "clarification_question": question
-                or "Richiesta ambigua. Puoi chiarire meglio il criterio desiderato?",
-                "operations": [],
-            }
-
-        return {
-            "needs_clarification": False,
-            "clarification_question": None,
-            "operations": safe_operations,
-        }
+        return {"operations": safe_operations}

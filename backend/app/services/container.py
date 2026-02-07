@@ -29,6 +29,7 @@ def build_services(settings: Settings) -> ServiceContainer:
             kimi_api_key=settings.kimi_api_key,
             kimi_model=settings.kimi_model,
             kimi_base_url=settings.kimi_base_url,
+            debug_llm=settings.debug_llm,
         ),
         analytics_logger=AnalyticsLogger(settings.usage_db_path),
     )

@@ -54,7 +54,7 @@ uvicorn app.main:app --reload --port 8000
 - `LLM_PROVIDER`: `openai` oppure `kimi`
 - OpenAI: `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL` (opzionale)
 - Kimi: `KIMI_API_KEY`, `KIMI_MODEL` (default `moonshot-v1-8k`), `KIMI_BASE_URL` (default `https://api.moonshot.cn/v1`)
-- Se `LLM_PROVIDER=kimi` e manca `KIMI_API_KEY`, `/api/plan` risponde con `500 Missing KIMI_API_KEY`
+- `DEBUG_LLM=true` abilita log della risposta raw del modello (solo debug locale)
 
 ## Frontend local setup
 ```bash
@@ -76,7 +76,10 @@ docker compose up --build
 ## Endpoint principali backend
 - `POST /api/files/upload` -> upload + analisi iniziale
 - `POST /api/plan` -> genera piano JSON da prompt
-  - include `needs_clarification` e `clarification_question` se il prompt e ambiguo
+  - risposta union:
+    - `{"type":"plan","plan":{...},"warnings":[...]}`
+    - `{"type":"clarify","question":"...","choices":[...],"clarify_id":"..."}`
+- `POST /api/plan/clarify` -> invia risposta al chiarimento e rigenera `plan` oppure nuovo `clarify`
 - `POST /api/transform/preview` -> preview risultato + summary/steps prima della conferma finale
 - `POST /api/transform` -> applica piano e salva output
 - `GET /api/results/{result_id}/download` -> download file risultato
@@ -102,3 +105,15 @@ pytest
 ## Analytics usage logging
 - Eventi business sono salvati localmente in SQLite (`analytics_events`).
 - Dettagli schema + query in `backend/docs/analytics.md`.
+
+## Clarify flow
+1. Utente invia `POST /api/plan` con `file_id + prompt`.
+2. Se il planner riesce a produrre un piano deterministico, ritorna `type="plan"`.
+3. Se il planner rileva ambiguita o output non affidabile, ritorna `type="clarify"` con `question`, `choices` e `clarify_id`.
+4. Il frontend mostra la card di chiarimento e invia `POST /api/plan/clarify` con `file_id + prompt + clarify_id + answer`.
+5. L'endpoint ritorna `type="plan"` oppure un nuovo `type="clarify"` finche la richiesta non e sufficientemente precisa.
+
+### Manual test rapido
+- Carica un CSV, inserisci prompt ambiguo (es. `pulisci e organizza`) e premi `Genera Piano`: deve comparire la card di chiarimento.
+- Seleziona una choice o scrivi una risposta libera e premi `Invia risposta`: deve arrivare un `type="plan"` con JSON nel textarea del piano.
+- Verifica che non ci siano retry automatici in loop: il secondo step parte solo da azione utente.

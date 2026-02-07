@@ -33,10 +33,26 @@ class PlanRequest(BaseModel):
 
 
 class PlanResponse(BaseModel):
+    type: Literal["plan"] = "plan"
     plan: dict[str, Any]
     warnings: list[str] = Field(default_factory=list)
-    needs_clarification: bool = False
-    clarification_question: str | None = None
+
+
+class ClarifyResponse(BaseModel):
+    type: Literal["clarify"] = "clarify"
+    question: str
+    choices: list[str] = Field(default_factory=list)
+    clarify_id: str
+
+
+PlanUnion = PlanResponse | ClarifyResponse
+
+
+class ClarifyRequest(BaseModel):
+    file_id: str = Field(min_length=8, max_length=64)
+    prompt: str = Field(min_length=3, max_length=3000)
+    clarify_id: str = Field(min_length=8, max_length=128)
+    answer: str = Field(min_length=1, max_length=3000)
 
 
 class ApplyRequest(BaseModel):

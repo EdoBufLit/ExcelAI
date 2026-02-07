@@ -31,6 +31,7 @@ class Settings:
     kimi_api_key: str | None = None
     kimi_model: str = "moonshot-v1-8k"
     kimi_base_url: str = "https://api.moonshot.cn/v1"
+    debug_llm: bool = False
     max_free_uses: int = 5
     preview_rows: int = 15
     cors_origins: list[str] = field(
@@ -46,14 +47,20 @@ class Settings:
 
         raw_provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
         llm_provider = raw_provider if raw_provider in {"openai", "kimi"} else "openai"
-
-        openai_api_key = _first_env("OPENAI_API_KEY", "LLM_API_KEY")
-        openai_model = _first_env("OPENAI_MODEL", "LLM_MODEL") or "gpt-4.1-mini"
-        openai_base_url = _first_env("OPENAI_BASE_URL", "LLM_BASE_URL")
-
-        kimi_api_key = _first_env("KIMI_API_KEY")
-        kimi_model = _first_env("KIMI_MODEL") or "moonshot-v1-8k"
-        kimi_base_url = _first_env("KIMI_BASE_URL") or "https://api.moonshot.cn/v1"
+        if llm_provider == "kimi":
+            openai_api_key = None
+            openai_model = "gpt-4.1-mini"
+            openai_base_url = None
+            kimi_api_key = _first_env("KIMI_API_KEY")
+            kimi_model = _first_env("KIMI_MODEL") or "moonshot-v1-8k"
+            kimi_base_url = _first_env("KIMI_BASE_URL") or "https://api.moonshot.cn/v1"
+        else:
+            openai_api_key = _first_env("OPENAI_API_KEY", "LLM_API_KEY")
+            openai_model = _first_env("OPENAI_MODEL", "LLM_MODEL") or "gpt-4.1-mini"
+            openai_base_url = _first_env("OPENAI_BASE_URL", "LLM_BASE_URL")
+            kimi_api_key = _first_env("KIMI_API_KEY")
+            kimi_model = _first_env("KIMI_MODEL") or "moonshot-v1-8k"
+            kimi_base_url = _first_env("KIMI_BASE_URL") or "https://api.moonshot.cn/v1"
 
         return cls(
             data_dir=Path(data_dir_raw),
@@ -65,6 +72,7 @@ class Settings:
             kimi_api_key=kimi_api_key,
             kimi_model=kimi_model,
             kimi_base_url=kimi_base_url,
+            debug_llm=os.getenv("DEBUG_LLM", "false").strip().lower() in {"1", "true", "yes", "on"},
             max_free_uses=int(os.getenv("MAX_FREE_USES", "5")),
             preview_rows=int(os.getenv("PREVIEW_ROWS", "15")),
             cors_origins=_split_csv(cors_raw),

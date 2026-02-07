@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   applyTransform,
   buildDownloadUrl,
+  clarifyPlan,
   fetchUsage,
   generatePlan,
   previewTransform,
@@ -69,8 +70,8 @@ export default function App() {
   const [selectedPresetId, setSelectedPresetId] = useState(null);
   const [planText, setPlanText] = useState('{"operations":[]}');
   const [planWarnings, setPlanWarnings] = useState([]);
-  const [needsClarification, setNeedsClarification] = useState(false);
-  const [clarificationQuestion, setClarificationQuestion] = useState("");
+  const [clarify, setClarify] = useState(null);
+  const [clarifyAnswer, setClarifyAnswer] = useState("");
   const [applyPayload, setApplyPayload] = useState(null);
   const [resultExplanation, setResultExplanation] = useState([]);
   const [previewPayload, setPreviewPayload] = useState(null);
@@ -84,6 +85,7 @@ export default function App() {
     apply: false
   });
   const [error, setError] = useState("");
+  const [toastMessage, setToastMessage] = useState("");
   const [pipelineDebug, setPipelineDebug] = useState({
     uploadResult: null,
     analyzeResult: null,
@@ -102,15 +104,43 @@ export default function App() {
   }
 
   function applyPlanPayloadToState(payload) {
-    setPlanText(JSON.stringify(payload.plan, null, 2));
-    setPlanWarnings(payload.warnings || []);
-    setNeedsClarification(Boolean(payload.needsClarification));
-    setClarificationQuestion(payload.clarificationQuestion || "");
     setPipelineDebug((previous) => ({ ...previous, planResult: payload }));
     console.log("[pipeline] plan result", payload);
+
+    if (payload?.type === "plan" && payload.plan && typeof payload.plan === "object") {
+      setPlanText(JSON.stringify(payload.plan, null, 2));
+      setPlanWarnings(payload.warnings || []);
+      setClarify(null);
+      setClarifyAnswer("");
+      return;
+    }
+
+    if (payload?.type === "clarify") {
+      setPlanText('{"operations":[]}');
+      setPlanWarnings([]);
+      setShowConfirmation(false);
+      setPreviewPayload(null);
+      setClarify({
+        question: payload.question || "La richiesta non e ancora chiara.",
+        choices: Array.isArray(payload.choices) ? payload.choices : [],
+        clarifyId: payload.clarifyId
+      });
+      setClarifyAnswer("");
+      return;
+    }
+
+    throw new Error("Risposta del planner non valida.");
   }
 
   function getExecutablePlanOrShowError({ closeConfirmation } = { closeConfirmation: false }) {
+    if (clarify) {
+      setError("Rispondi prima alla richiesta di chiarimento per ottenere un piano valido.");
+      if (closeConfirmation) {
+        setShowConfirmation(false);
+      }
+      return null;
+    }
+
     const parsedPlanResult = parsePlanText(planText);
     if (!parsedPlanResult.isValidJson) {
       setError(toUiErrorMessage("invalid_plan_json"));
@@ -134,6 +164,13 @@ export default function App() {
   useEffect(() => {
     refreshUsage();
   }, []);
+
+  useEffect(() => {
+    if (!error) return;
+    setToastMessage(error);
+    const timer = setTimeout(() => setToastMessage(""), 4500);
+    return () => clearTimeout(timer);
+  }, [error]);
 
   async function refreshUsage() {
     setLoading((s) => ({ ...s, usage: true }));
@@ -172,8 +209,8 @@ export default function App() {
     setResultExplanation([]);
     setPreviewPayload(null);
     setShowConfirmation(false);
-    setNeedsClarification(false);
-    setClarificationQuestion("");
+    setClarify(null);
+    setClarifyAnswer("");
     setPlanWarnings([]);
     setPipelineDebug((previous) => ({
       ...previous,
@@ -197,7 +234,6 @@ export default function App() {
       }));
       setUploadPayload(payload);
       setPlanText('{"operations":[]}');
-      await generatePlanForFile(payload.fileId);
     } catch (err) {
       setError(logPipelineError("upload", err));
     } finally {
@@ -210,13 +246,38 @@ export default function App() {
     setError("");
     setPreviewPayload(null);
     setShowConfirmation(false);
-    setNeedsClarification(false);
-    setClarificationQuestion("");
+    setClarify(null);
+    setClarifyAnswer("");
     await generatePlanForFile(uploadPayload.fileId);
   }
 
+  async function onSubmitClarify(selectedAnswer) {
+    if (!uploadPayload?.fileId || !clarify?.clarifyId) return;
+    const answer = (selectedAnswer ?? clarifyAnswer).trim();
+    if (!answer) {
+      setError("Scrivi una risposta o seleziona una scelta prima di inviare.");
+      return;
+    }
+
+    setError("");
+    setLoading((s) => ({ ...s, plan: true }));
+    try {
+      const payload = await clarifyPlan({
+        fileId: uploadPayload.fileId,
+        prompt,
+        clarifyId: clarify.clarifyId,
+        answer
+      });
+      applyPlanPayloadToState(payload);
+    } catch (err) {
+      setError(logPipelineError("clarify", err));
+    } finally {
+      setLoading((s) => ({ ...s, plan: false }));
+    }
+  }
+
   async function onApply() {
-    if (!uploadPayload?.fileId || !previewPayload?.previewAvailable || isLimitReached || needsClarification) return;
+    if (!uploadPayload?.fileId || !previewPayload?.previewAvailable || isLimitReached || clarify) return;
     setError("");
     const executablePlan = getExecutablePlanOrShowError();
     if (!executablePlan) {
@@ -248,7 +309,7 @@ export default function App() {
   }
 
   async function onOpenConfirmation() {
-    if (!uploadPayload?.fileId || needsClarification) return;
+    if (!uploadPayload?.fileId || clarify) return;
     setError("");
     const executablePlan = getExecutablePlanOrShowError({ closeConfirmation: true });
     if (!executablePlan) {
@@ -279,8 +340,8 @@ export default function App() {
     setSelectedPresetId(preset.id);
     setShowConfirmation(false);
     setPreviewPayload(null);
-    setNeedsClarification(false);
-    setClarificationQuestion("");
+    setClarify(null);
+    setClarifyAnswer("");
   }
 
   const usageLabel = useMemo(() => {
@@ -293,6 +354,7 @@ export default function App() {
     return usage.remainingUses <= 0;
   }, [usage]);
 
+  const hasPendingClarification = Boolean(clarify);
   const hasUploadedFile = Boolean(uploadPayload?.fileId);
   const hasNonEmptyPlan = useMemo(() => planText.trim().length > 0, [planText]);
 
@@ -303,7 +365,7 @@ export default function App() {
     return Array.isArray(parsedPlanResult.plan?.operations) && parsedPlanResult.plan.operations.length > 0;
   }, [planText, hasNonEmptyPlan]);
 
-  const canOpenConfirmation = hasUploadedFile && hasNonEmptyPlan && planHasOperations;
+  const canOpenConfirmation = hasUploadedFile && hasNonEmptyPlan && planHasOperations && !hasPendingClarification;
 
   function onUpgradeClick() {
     setError("Limite free raggiunto. Passa al piano Pro (billing in arrivo).");
@@ -390,8 +452,8 @@ export default function App() {
           onChange={(event) => {
             const nextPrompt = event.target.value;
             setPrompt(nextPrompt);
-            setNeedsClarification(false);
-            setClarificationQuestion("");
+            setClarify(null);
+            setClarifyAnswer("");
             if (selectedPresetId) {
               const activePreset = transformPresets.find((preset) => preset.id === selectedPresetId);
               if (activePreset && activePreset.prompt !== nextPrompt) {
@@ -427,18 +489,50 @@ export default function App() {
             ))}
           </ul>
         )}
-        {needsClarification && (
+        {clarify && (
           <div className="clarification-box">
             <p className="clarification-title">Richiesta chiarimento</p>
-            <p className="clarification-question">{clarificationQuestion}</p>
-            <p className="muted">Aggiorna il prompt e premi "Genera Piano". Nessuna esecuzione verra avviata finche non chiarisci.</p>
+            <p className="clarification-question">{clarify.question}</p>
+            {clarify.choices.length > 0 && (
+              <div className="clarify-choice-row">
+                {clarify.choices.map((choice) => (
+                  <button
+                    key={choice}
+                    className="clarify-choice"
+                    type="button"
+                    onClick={() => {
+                      setClarifyAnswer(choice);
+                      void onSubmitClarify(choice);
+                    }}
+                    disabled={loading.plan}
+                  >
+                    {choice}
+                  </button>
+                ))}
+              </div>
+            )}
+            <label className="label" htmlFor="clarify-answer">
+              Altro
+            </label>
+            <textarea
+              id="clarify-answer"
+              value={clarifyAnswer}
+              onChange={(event) => setClarifyAnswer(event.target.value)}
+              rows={2}
+              placeholder="Scrivi qui la tua risposta..."
+            />
+            <div className="row">
+              <button type="button" onClick={() => void onSubmitClarify()} disabled={loading.plan || !clarifyAnswer.trim()}>
+                {loading.plan ? "Invio..." : "Invia risposta"}
+              </button>
+            </div>
           </div>
         )}
       </section>
 
       <section className="card">
         <h2>3) Conferma Prima Dell'applicazione</h2>
-        {!planHasOperations && <p className="state-note">{EMPTY_PLAN_OPERATIONS_MESSAGE}</p>}
+        {!planHasOperations && !hasPendingClarification && <p className="state-note">{EMPTY_PLAN_OPERATIONS_MESSAGE}</p>}
         {isLimitReached && (
           <div className="limit-block">
             <p className="limit-text">Hai raggiunto il limite di utilizzi gratuiti. L'esecuzione e bloccata.</p>
@@ -454,7 +548,7 @@ export default function App() {
           </select>
           <button
             onClick={onOpenConfirmation}
-            disabled={!canOpenConfirmation || loading.preview || isLimitReached || needsClarification}
+            disabled={!canOpenConfirmation || loading.preview || isLimitReached}
           >
             {loading.preview ? "Preparazione preview..." : "Apri Conferma"}
           </button>
@@ -513,7 +607,7 @@ export default function App() {
                   <button
                     className="danger"
                     onClick={onApply}
-                    disabled={!previewPayload.previewAvailable || loading.apply || isLimitReached || needsClarification}
+                    disabled={!previewPayload.previewAvailable || loading.apply || isLimitReached || hasPendingClarification}
                   >
                     {loading.apply ? "Applicazione..." : "Applica trasformazioni"}
                   </button>
@@ -574,6 +668,7 @@ export default function App() {
           <strong>Errore:</strong> {error}
         </section>
       )}
+      {toastMessage && <div className="toast">{toastMessage}</div>}
     </main>
   );
 }
