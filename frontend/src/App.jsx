@@ -85,6 +85,27 @@ export default function App() {
   });
   const [error, setError] = useState("");
 
+  function getExecutablePlanOrShowError({ closeConfirmation } = { closeConfirmation: false }) {
+    const parsedPlanResult = parsePlanText(planText);
+    if (!parsedPlanResult.isValidJson) {
+      setError(toUiErrorMessage("invalid_plan_json"));
+      if (closeConfirmation) {
+        setShowConfirmation(false);
+      }
+      return null;
+    }
+
+    if (!Array.isArray(parsedPlanResult.plan?.operations) || parsedPlanResult.plan.operations.length === 0) {
+      setError(EMPTY_PLAN_OPERATIONS_MESSAGE);
+      if (closeConfirmation) {
+        setShowConfirmation(false);
+      }
+      return null;
+    }
+
+    return parsedPlanResult.plan;
+  }
+
   useEffect(() => {
     refreshUsage();
   }, []);
@@ -151,26 +172,20 @@ export default function App() {
   async function onApply() {
     if (!uploadPayload?.file_id || !previewPayload?.preview_available || isLimitReached || needsClarification) return;
     setError("");
-    const parsedPlanResult = parsePlanText(planText);
-    if (!parsedPlanResult.isValidJson) {
-      setError(toUiErrorMessage("invalid_plan_json"));
-      return;
-    }
-    if (!Array.isArray(parsedPlanResult.plan?.operations) || parsedPlanResult.plan.operations.length === 0) {
-      setError(EMPTY_PLAN_OPERATIONS_MESSAGE);
+    const executablePlan = getExecutablePlanOrShowError();
+    if (!executablePlan) {
       return;
     }
     setLoading((s) => ({ ...s, apply: true }));
     try {
-      const parsedPlan = parsedPlanResult.plan;
       const payload = await applyTransform({
         fileId: uploadPayload.file_id,
         userId,
-        plan: parsedPlan,
+        plan: executablePlan,
         outputFormat
       });
       setApplyPayload(payload);
-      setResultExplanation(buildHumanResultExplanation(parsedPlan));
+      setResultExplanation(buildHumanResultExplanation(executablePlan));
       setUsage((previous) => ({
         user_id: userId,
         usage_count: payload.usage_count,
@@ -189,15 +204,8 @@ export default function App() {
   async function onOpenConfirmation() {
     if (!uploadPayload?.file_id || needsClarification) return;
     setError("");
-    const parsedPlanResult = parsePlanText(planText);
-    if (!parsedPlanResult.isValidJson) {
-      setError(toUiErrorMessage("invalid_plan_json"));
-      setShowConfirmation(false);
-      return;
-    }
-    if (!Array.isArray(parsedPlanResult.plan?.operations) || parsedPlanResult.plan.operations.length === 0) {
-      setError(EMPTY_PLAN_OPERATIONS_MESSAGE);
-      setShowConfirmation(false);
+    const executablePlan = getExecutablePlanOrShowError({ closeConfirmation: true });
+    if (!executablePlan) {
       return;
     }
     setShowConfirmation(true);
@@ -206,7 +214,7 @@ export default function App() {
     try {
       const payload = await previewTransform({
         fileId: uploadPayload.file_id,
-        plan: parsedPlanResult.plan
+        plan: executablePlan
       });
       setPreviewPayload(payload);
     } catch (err) {
