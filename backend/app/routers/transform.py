@@ -5,7 +5,7 @@ from time import perf_counter
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.models import (
     ApplyRequest,
@@ -19,7 +19,6 @@ from app.models import (
 )
 from app.services.analyzer import analysis_for_llm, build_analysis
 from app.services.container import ServiceContainer
-from app.services.llm_planner import LLMConfigurationError, LLMProviderRequestError
 from app.services.plan_explainer import explain_plan
 from app.services.transformer import TransformationError, apply_plan
 
@@ -104,7 +103,7 @@ def upload_file(request: Request, file: UploadFile = File(...)) -> UploadRespons
 
 
 @router.post("/plan", response_model=PlanResponse)
-def generate_plan(payload: PlanRequest, request: Request) -> PlanResponse:
+def generate_plan(payload: PlanRequest, request: Request) -> PlanResponse | JSONResponse:
     services = _services(request)
     settings = request.app.state.settings
     try:
@@ -115,12 +114,12 @@ def generate_plan(payload: PlanRequest, request: Request) -> PlanResponse:
         raise HTTPException(status_code=500, detail=f"Unable to read source file: {error}") from error
 
     analysis = build_analysis(df, settings.preview_rows)
-    try:
-        plan_payload, warnings = services.llm_planner.create_plan(payload.prompt, analysis_for_llm(analysis))
-    except LLMConfigurationError as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
-    except LLMProviderRequestError as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
+    planning_result = services.llm_planner.create_plan(payload.prompt, analysis_for_llm(analysis))
+    if planning_result.error is not None:
+        return JSONResponse(status_code=422, content=planning_result.error)
+
+    plan_payload = planning_result.plan
+    warnings = planning_result.warnings
     return PlanResponse(
         plan={
             "needs_clarification": bool(plan_payload.get("needs_clarification", False)),

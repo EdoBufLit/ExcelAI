@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+from dataclasses import dataclass, field
 from typing import Any
 
 from openai import OpenAI
 
 from app.services.transformer import SUPPORTED_OPERATIONS
 
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are an expert data transformation planner.
 Return ONLY valid JSON in this exact structure:
@@ -46,12 +50,17 @@ Supported operations:
 """
 
 
-class LLMConfigurationError(RuntimeError):
-    pass
-
-
-class LLMProviderRequestError(RuntimeError):
-    pass
+@dataclass(slots=True)
+class PlanGenerationResult:
+    plan: dict[str, Any] = field(
+        default_factory=lambda: {
+            "needs_clarification": False,
+            "clarification_question": None,
+            "operations": [],
+        }
+    )
+    warnings: list[str] = field(default_factory=list)
+    error: dict[str, Any] | None = None
 
 
 class LLMPlanner:
@@ -92,15 +101,49 @@ class LLMPlanner:
     def base_url(self) -> str | None:
         return self._base_url
 
-    def create_plan(self, prompt: str, analysis: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-        if self._client is None:
-            if self._provider == "kimi":
-                raise LLMConfigurationError("Missing KIMI_API_KEY")
-            return self._fallback_plan(prompt, analysis), [
-                "OPENAI_API_KEY non configurata: uso planner euristico locale.",
-            ]
+    def create_plan(self, prompt: str, analysis: dict[str, Any]) -> PlanGenerationResult:
+        logger.info(
+            "LLM plan request start: provider=%s model=%s base_url=%s",
+            self._provider,
+            self._model,
+            self._base_url or "(default)",
+        )
+
+        fallback_triggered = False
+        raw_output = ""
+        upstream_status: int | None = None
 
         try:
+            if self._client is None:
+                if self._provider == "kimi":
+                    logger.info(
+                        "LLM fallback triggered: provider=%s model=%s has_fallback=%s",
+                        self._provider,
+                        self._model,
+                        False,
+                    )
+                    return PlanGenerationResult(
+                        error=self._failure_payload(
+                            reason="missing_kimi_api_key",
+                            has_fallback=False,
+                        )
+                    )
+
+                fallback_triggered = True
+                fallback_plan = self._fallback_plan(prompt, analysis)
+                logger.info(
+                    "LLM fallback triggered: provider=%s model=%s has_fallback=%s",
+                    self._provider,
+                    self._model,
+                    fallback_triggered,
+                )
+                return self._result_from_plan(
+                    plan=fallback_plan,
+                    warnings=["OPENAI_API_KEY non configurata: uso planner euristico locale."],
+                    raw_output=json.dumps(fallback_plan, ensure_ascii=False),
+                    has_fallback=True,
+                )
+
             response = self._client.chat.completions.create(
                 model=self._model,
                 temperature=0.1,
@@ -118,14 +161,125 @@ class LLMPlanner:
                     },
                 ],
             )
-            content = response.choices[0].message.content or '{"operations":[]}'
-            plan = self._sanitize_plan_payload(json.loads(content))
-            return plan, []
+            raw_output = response.choices[0].message.content or '{"operations":[]}'
+            parsed_payload = json.loads(raw_output)
+            plan = self._sanitize_plan_payload(parsed_payload)
+
+            logger.info(
+                "LLM fallback triggered: provider=%s model=%s has_fallback=%s",
+                self._provider,
+                self._model,
+                fallback_triggered,
+            )
+            return self._result_from_plan(plan=plan, warnings=[], raw_output=raw_output, has_fallback=False)
         except Exception as error:  # pragma: no cover - external API variability
-            if self._provider == "kimi":
-                raise LLMProviderRequestError(f"Kimi planner request failed: {error}") from error
-            fallback = self._fallback_plan(prompt, analysis)
-            return fallback, [f"Errore LLM, fallback locale: {error}"]
+            upstream_status = self._extract_status_code(error)
+            logger.warning(
+                "LLM planner failure: provider=%s model=%s upstream_status=%s error=%s",
+                self._provider,
+                self._model,
+                upstream_status,
+                str(error),
+            )
+
+            if upstream_status in {401, 403}:
+                logger.info(
+                    "LLM fallback triggered: provider=%s model=%s has_fallback=%s",
+                    self._provider,
+                    self._model,
+                    False,
+                )
+                return PlanGenerationResult(
+                    error=self._failure_payload(
+                        reason="invalid_llm_auth",
+                        has_fallback=False,
+                    )
+                )
+
+            if self._provider == "openai":
+                fallback_triggered = True
+                fallback_plan = self._fallback_plan(prompt, analysis)
+                logger.info(
+                    "LLM fallback triggered: provider=%s model=%s has_fallback=%s",
+                    self._provider,
+                    self._model,
+                    fallback_triggered,
+                )
+                return self._result_from_plan(
+                    plan=fallback_plan,
+                    warnings=[f"Errore LLM, fallback locale: {error}"],
+                    raw_output=json.dumps(fallback_plan, ensure_ascii=False),
+                    has_fallback=True,
+                )
+
+            logger.info(
+                "LLM fallback triggered: provider=%s model=%s has_fallback=%s",
+                self._provider,
+                self._model,
+                False,
+            )
+            return PlanGenerationResult(
+                error=self._failure_payload(
+                    reason="llm_request_failed",
+                    has_fallback=False,
+                )
+            )
+
+    def _result_from_plan(
+        self,
+        *,
+        plan: dict[str, Any],
+        warnings: list[str],
+        raw_output: str,
+        has_fallback: bool,
+    ) -> PlanGenerationResult:
+        operations = plan.get("operations")
+        if not isinstance(operations, list) or len(operations) == 0:
+            return PlanGenerationResult(
+                warnings=warnings,
+                error=self._failure_payload(
+                    reason="empty_plan",
+                    has_fallback=has_fallback,
+                    raw_output=raw_output,
+                ),
+            )
+
+        return PlanGenerationResult(plan=plan, warnings=warnings)
+
+    def _failure_payload(
+        self,
+        *,
+        reason: str,
+        has_fallback: bool,
+        raw_output: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "error": "plan_generation_failed",
+            "reason": reason,
+            "llm_provider": self._provider,
+            "model": self._model,
+            "has_fallback": has_fallback,
+        }
+        if reason == "empty_plan" and raw_output is not None:
+            payload["raw_output"] = self._truncate(raw_output, limit=500)
+        return payload
+
+    @staticmethod
+    def _extract_status_code(error: Exception) -> int | None:
+        status_code = getattr(error, "status_code", None)
+        if isinstance(status_code, int):
+            return status_code
+        response = getattr(error, "response", None)
+        response_status = getattr(response, "status_code", None)
+        if isinstance(response_status, int):
+            return response_status
+        return None
+
+    @staticmethod
+    def _truncate(value: str, *, limit: int) -> str:
+        if len(value) <= limit:
+            return value
+        return f"{value[:limit]}...(truncated)"
 
     def _fallback_plan(self, prompt: str, analysis: dict[str, Any]) -> dict[str, Any]:
         prompt_low = prompt.lower()

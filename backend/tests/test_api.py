@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
+from app.services.llm_planner import PlanGenerationResult
 
 
 def test_upload_plan_transform_flow(tmp_path: Path) -> None:
@@ -119,13 +120,13 @@ def test_ambiguous_prompt_requires_clarification(tmp_path: Path) -> None:
         cors_origins=["http://localhost:5173"],
     )
     app = create_app(settings)
-    app.state.services.llm_planner.create_plan = lambda prompt, analysis: (
-        {
+    app.state.services.llm_planner.create_plan = lambda prompt, analysis: PlanGenerationResult(
+        plan={
             "needs_clarification": True,
             "clarification_question": "Intendi raggruppare per cliente o per data?",
-            "operations": [],
+            "operations": [{"type": "sort_rows", "by": ["amount"], "ascending": False}],
         },
-        [],
+        warnings=[],
     )
     client = TestClient(app)
 
@@ -219,7 +220,7 @@ def test_apply_rejects_empty_or_missing_operations(tmp_path: Path) -> None:
     assert usage_response.json()["remaining_uses"] == 5
 
 
-def test_plan_returns_500_when_kimi_key_missing(tmp_path: Path) -> None:
+def test_plan_returns_422_when_kimi_key_missing(tmp_path: Path) -> None:
     settings = Settings(
         data_dir=tmp_path / "data",
         usage_db_path=tmp_path / "usage.db",
@@ -251,5 +252,68 @@ def test_plan_returns_500_when_kimi_key_missing(tmp_path: Path) -> None:
             "user_id": "tester",
         },
     )
-    assert plan_response.status_code == 500
-    assert plan_response.json()["detail"] == "Missing KIMI_API_KEY"
+    assert plan_response.status_code == 422
+    payload = plan_response.json()
+    assert payload["error"] == "plan_generation_failed"
+    assert payload["reason"] == "missing_kimi_api_key"
+    assert payload["llm_provider"] == "kimi"
+    assert payload["model"] == "moonshot-v1-8k"
+    assert payload["has_fallback"] is False
+
+
+def test_plan_returns_422_when_llm_returns_empty_plan(tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        usage_db_path=tmp_path / "usage.db",
+        llm_provider="openai",
+        openai_api_key="sk-test",
+        openai_model="gpt-4.1-mini",
+        max_free_uses=5,
+        preview_rows=10,
+        cors_origins=["http://localhost:5173"],
+    )
+    app = create_app(settings)
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            class _Message:
+                content = '{"operations":[]}'
+
+            class _Choice:
+                message = _Message()
+
+            class _Response:
+                choices = [_Choice()]
+
+            return _Response()
+
+    app.state.services.llm_planner._client = type(
+        "FakeClient",
+        (),
+        {"chat": type("FakeChat", (), {"completions": _FakeCompletions()})()},
+    )()
+
+    client = TestClient(app)
+
+    csv_data = b"name,amount\nanna,10\n"
+    upload_response = client.post(
+        "/api/files/upload",
+        files={"file": ("sample.csv", csv_data, "text/csv")},
+    )
+    assert upload_response.status_code == 200
+    file_id = upload_response.json()["file_id"]
+
+    plan_response = client.post(
+        "/api/plan",
+        json={
+            "file_id": file_id,
+            "prompt": "fai qualcosa",
+            "user_id": "tester",
+        },
+    )
+    assert plan_response.status_code == 422
+    payload = plan_response.json()
+    assert payload["error"] == "plan_generation_failed"
+    assert payload["reason"] == "empty_plan"
+    assert payload["has_fallback"] is False
+    assert "raw_output" in payload
