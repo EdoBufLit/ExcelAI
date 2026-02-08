@@ -1,7 +1,7 @@
 export default function PromptPresets({ presets, selectedPresetId, onSelect }) {
   return (
     <div className="preset-wrap">
-      <p className="preset-title">Preset rapidi</p>
+      <p className="preset-title">Trasformazioni comuni</p>
       <div className="preset-grid">
         {presets.map((preset) => (
           <button

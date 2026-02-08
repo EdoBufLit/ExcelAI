@@ -17,6 +17,13 @@ const USER_KEY = "excel_ai_transformer_user_id";
 const EMPTY_PLAN_OPERATIONS_MESSAGE =
   "Il piano non contiene operazioni. Genera o modifica il piano prima di applicarlo.";
 
+const STEPS = [
+  { num: 1, label: "Carica" },
+  { num: 2, label: "Descrivi" },
+  { num: 3, label: "Rivedi" },
+  { num: 4, label: "Scarica" }
+];
+
 function getUserId() {
   const existing = localStorage.getItem(USER_KEY);
   if (existing) return existing;
@@ -92,6 +99,9 @@ export default function App() {
     planResult: null,
     errors: []
   });
+
+  const [activeTab, setActiveTab] = useState("prompt");
+  const [showDebug, setShowDebug] = useState(false);
 
   function logPipelineError(stage, err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -172,6 +182,18 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [error]);
 
+  useEffect(() => {
+    if (planHasOperations && !clarify) {
+      setActiveTab("plan");
+    }
+  }, [planHasOperations]);
+
+  useEffect(() => {
+    if (clarify) {
+      setActiveTab("prompt");
+    }
+  }, [clarify]);
+
   async function refreshUsage() {
     setLoading((s) => ({ ...s, usage: true }));
     try {
@@ -234,6 +256,7 @@ export default function App() {
       }));
       setUploadPayload(payload);
       setPlanText('{"operations":[]}');
+      setActiveTab("prompt");
     } catch (err) {
       setError(logPipelineError("upload", err));
     } finally {
@@ -345,8 +368,13 @@ export default function App() {
   }
 
   const usageLabel = useMemo(() => {
-    if (!usage) return "Caricamento utilizzi...";
+    if (!usage) return "Caricamento...";
     return `${usage.remainingUses} / ${usage.limit} elaborazioni rimaste`;
+  }, [usage]);
+
+  const usagePillLabel = useMemo(() => {
+    if (!usage) return "...";
+    return `${usage.remainingUses} / ${usage.limit} elaborazioni`;
   }, [usage]);
 
   const isLimitReached = useMemo(() => {
@@ -367,131 +395,283 @@ export default function App() {
 
   const canOpenConfirmation = hasUploadedFile && hasNonEmptyPlan && planHasOperations && !hasPendingClarification;
 
+  const currentStep = useMemo(() => {
+    if (applyPayload?.analysis) return 4;
+    if (planHasOperations && !hasPendingClarification) return 3;
+    if (hasUploadedFile) return 2;
+    return 1;
+  }, [applyPayload, planHasOperations, hasPendingClarification, hasUploadedFile]);
+
   function onUpgradeClick() {
     setError("Limite free raggiunto. Passa al piano Pro (billing in arrivo).");
   }
 
   return (
     <main className="page">
-      <div className={`usage-sticky ${isLimitReached ? "limit" : ""}`}>
-        <span className="usage-text">{loading.usage ? "..." : usageLabel}</span>
-        {isLimitReached && (
-          <button className="pro-cta" onClick={onUpgradeClick}>
-            Passa al piano Pro
-          </button>
-        )}
-      </div>
-
-      <section className="hero">
-        <p className="eyebrow">MVP</p>
-        <h1>Excel AI Transformer</h1>
-        <p className="subtitle">Trasforma file CSV/XLSX con piano JSON generato da LLM e applicazione sicura.</p>
-        <div className="badge-row">
-          <span className="badge mono">user_id: {userId}</span>
-          <span className={`badge ${isLimitReached ? "badge-limit" : ""}`}>{loading.usage ? "..." : usageLabel}</span>
-          <button className="secondary" onClick={refreshUsage} disabled={loading.usage}>
-            Aggiorna uso
-          </button>
+      {/* ── Top Navigation ── */}
+      <nav className="top-bar">
+        <div className="top-bar-brand">
+          <svg className="brand-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <line x1="3" y1="9" x2="21" y2="9" />
+            <line x1="3" y1="15" x2="21" y2="15" />
+            <line x1="9" y1="3" x2="9" y2="21" />
+          </svg>
+          <span>Excel AI Transformer</span>
         </div>
+        <div className="top-bar-right">
+          <button className="usage-pill" onClick={refreshUsage} disabled={loading.usage} title="Clicca per aggiornare">
+            {loading.usage ? (
+              <span className="spinner" />
+            ) : (
+              <svg className="usage-pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+              </svg>
+            )}
+            <span>{usagePillLabel}</span>
+          </button>
+          {isLimitReached && (
+            <button className="btn-upgrade" onClick={onUpgradeClick}>
+              Passa a Pro
+            </button>
+          )}
+          <div className="user-avatar" title={`Account: ${userId}`}>
+            {userId.slice(-2).toUpperCase()}
+          </div>
+        </div>
+      </nav>
+
+      {/* ── Hero ── */}
+      <section className="hero">
+        <span className="hero-badge">AI-Powered</span>
+        <h1>Trasforma i tuoi fogli di calcolo</h1>
+        <p className="hero-subtitle">
+          Descrivi le modifiche in linguaggio naturale. L'intelligenza artificiale si occupa del resto.
+        </p>
       </section>
 
-      <section className="card">
-        <h2>1) Upload File</h2>
-        <div className="row">
+      {/* ── Stepper ── */}
+      <div className="stepper">
+        {STEPS.map((step) => (
+          <div
+            key={step.num}
+            className={`stepper-step${currentStep === step.num ? " stepper-active" : ""}${currentStep > step.num ? " stepper-completed" : ""}`}
+          >
+            <div className="stepper-circle">
+              {currentStep > step.num ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              ) : (
+                step.num
+              )}
+            </div>
+            <span className="stepper-label">{step.label}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Step 1: Upload ── */}
+      <section className={`card${currentStep === 1 ? " card-active" : ""}${currentStep > 1 ? " card-done" : ""}`}>
+        <div className="card-header">
+          <div className={`card-step-num${currentStep > 1 ? " card-step-done" : ""}`}>
+            {currentStep > 1 ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            ) : (
+              "1"
+            )}
+          </div>
+          <div className="card-header-text">
+            <h2>Carica il tuo file</h2>
+            <p className="card-desc">Seleziona un file CSV o XLSX da trasformare</p>
+          </div>
+        </div>
+
+        <label className="upload-zone" htmlFor="file-input">
           <input
+            id="file-input"
             type="file"
             accept=".csv,.xlsx"
             onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
+            hidden
           />
-          <button onClick={onUpload} disabled={!selectedFile || loading.upload}>
-            {loading.upload ? "Caricamento..." : "Upload e Analizza"}
-          </button>
-        </div>
+          {selectedFile ? (
+            <div className="upload-zone-selected">
+              <svg className="upload-zone-file-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+              </svg>
+              <div className="upload-zone-info">
+                <span className="upload-zone-name">{selectedFile.name}</span>
+                <span className="upload-zone-size">{(selectedFile.size / 1024).toFixed(1)} KB</span>
+              </div>
+              <span className="upload-zone-change">Cambia</span>
+            </div>
+          ) : (
+            <div className="upload-zone-empty">
+              <svg className="upload-zone-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+              <span className="upload-zone-text">Clicca per selezionare un file</span>
+              <span className="upload-zone-hint">Formati supportati: CSV, XLSX</span>
+            </div>
+          )}
+        </label>
+
+        <button onClick={onUpload} disabled={!selectedFile || loading.upload}>
+          {loading.upload ? (
+            <><span className="spinner" /> Caricamento in corso...</>
+          ) : (
+            "Carica e analizza"
+          )}
+        </button>
+
         {uploadPayload?.analysis && (
           <>
-            <p className="muted">
-              Righe: {uploadPayload.analysis.rowCount} | Colonne: {uploadPayload.analysis.columnCount}
-            </p>
+            <div className="analysis-summary">
+              <span className="analysis-stat">{uploadPayload.analysis.rowCount} righe</span>
+              <span className="analysis-divider" />
+              <span className="analysis-stat">{uploadPayload.analysis.columnCount} colonne</span>
+            </div>
             <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
                     <th>Colonna</th>
                     <th>Tipo</th>
-                    <th>Null</th>
-                    <th>Sample</th>
+                    <th>Valori nulli</th>
+                    <th>Esempio</th>
                   </tr>
                 </thead>
                 <tbody>
                   {uploadPayload.analysis.columns.map((column) => (
                     <tr key={column.name}>
-                      <td>{column.name}</td>
-                      <td>{column.dtype}</td>
+                      <td><strong>{column.name}</strong></td>
+                      <td><span className="badge-type">{column.dtype}</span></td>
                       <td>{column.nullCount}</td>
-                      <td>{column.sampleValues.join(", ")}</td>
+                      <td className="muted">{column.sampleValues.join(", ")}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            <h3>Preview Input</h3>
+            <h3>Anteprima dati</h3>
             <DataTable rows={uploadPayload.analysis.preview} />
           </>
         )}
       </section>
 
-      <section className="card">
-        <h2>2) Prompt e Piano AI</h2>
-        <PromptPresets presets={transformPresets} selectedPresetId={selectedPresetId} onSelect={onPresetSelect} />
-        <label className="label" htmlFor="prompt">
-          Prompt
-        </label>
-        <textarea
-          id="prompt"
-          value={prompt}
-          onChange={(event) => {
-            const nextPrompt = event.target.value;
-            setPrompt(nextPrompt);
-            setClarify(null);
-            setClarifyAnswer("");
-            if (selectedPresetId) {
-              const activePreset = transformPresets.find((preset) => preset.id === selectedPresetId);
-              if (activePreset && activePreset.prompt !== nextPrompt) {
-                setSelectedPresetId(null);
-              }
-            }
-          }}
-          rows={4}
-        />
-        <div className="row">
-          <button onClick={onGeneratePlan} disabled={!uploadPayload || loading.plan}>
-            {loading.plan ? "Generazione..." : "Genera Piano"}
+      {/* ── Step 2: Prompt & Plan ── */}
+      <section className={`card${currentStep === 2 ? " card-active" : ""}${currentStep > 2 ? " card-done" : ""}`}>
+        <div className="card-header">
+          <div className={`card-step-num${currentStep > 2 ? " card-step-done" : ""}`}>
+            {currentStep > 2 ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            ) : (
+              "2"
+            )}
+          </div>
+          <div className="card-header-text">
+            <h2>Descrivi la trasformazione</h2>
+            <p className="card-desc">Spiega cosa vuoi fare con i tuoi dati o scegli un preset</p>
+          </div>
+        </div>
+
+        <div className="tab-bar">
+          <button
+            type="button"
+            className={`tab${activeTab === "prompt" ? " tab-active" : ""}`}
+            onClick={() => setActiveTab("prompt")}
+          >
+            Istruzioni
+          </button>
+          <button
+            type="button"
+            className={`tab${activeTab === "plan" ? " tab-active" : ""}`}
+            onClick={() => setActiveTab("plan")}
+          >
+            Piano AI
+            {planHasOperations && <span className="tab-dot" />}
           </button>
         </div>
-        <label className="label" htmlFor="plan">
-          Piano JSON (modificabile)
-        </label>
-        <textarea
-          id="plan"
-          className="mono"
-          value={planText}
-          onChange={(event) => {
-            setPlanText(event.target.value);
-            setShowConfirmation(false);
-            setPreviewPayload(null);
-          }}
-          rows={12}
-        />
-        {planWarnings.length > 0 && (
-          <ul className="warnings">
-            {planWarnings.map((warning) => (
-              <li key={warning}>{warning}</li>
-            ))}
-          </ul>
+
+        {activeTab === "prompt" && (
+          <div className="tab-content">
+            <PromptPresets presets={transformPresets} selectedPresetId={selectedPresetId} onSelect={onPresetSelect} />
+            <label className="label" htmlFor="prompt">
+              Cosa vuoi fare con i tuoi dati?
+            </label>
+            <textarea
+              id="prompt"
+              value={prompt}
+              onChange={(event) => {
+                const nextPrompt = event.target.value;
+                setPrompt(nextPrompt);
+                setClarify(null);
+                setClarifyAnswer("");
+                if (selectedPresetId) {
+                  const activePreset = transformPresets.find((preset) => preset.id === selectedPresetId);
+                  if (activePreset && activePreset.prompt !== nextPrompt) {
+                    setSelectedPresetId(null);
+                  }
+                }
+              }}
+              rows={4}
+              placeholder="Es: Pulisci gli spazi, rinomina le colonne, ordina per data..."
+            />
+            <button onClick={onGeneratePlan} disabled={!uploadPayload || loading.plan}>
+              {loading.plan ? (
+                <><span className="spinner" /> Generazione in corso...</>
+              ) : (
+                "Genera piano AI"
+              )}
+            </button>
+          </div>
         )}
+
+        {activeTab === "plan" && (
+          <div className="tab-content">
+            <div className="plan-editor-header">
+              <label className="label" htmlFor="plan">
+                Piano di trasformazione
+              </label>
+              <p className="plan-hint">
+                Generato dall'AI in formato JSON. Puoi modificarlo manualmente se necessario.
+              </p>
+            </div>
+            <textarea
+              id="plan"
+              className="mono plan-textarea"
+              value={planText}
+              onChange={(event) => {
+                setPlanText(event.target.value);
+                setShowConfirmation(false);
+                setPreviewPayload(null);
+              }}
+              rows={14}
+            />
+            {planWarnings.length > 0 && (
+              <div className="warnings">
+                <p className="warnings-title">Avvisi</p>
+                <ul className="warnings-list">
+                  {planWarnings.map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
         {clarify && (
           <div className="clarification-box">
-            <p className="clarification-title">Richiesta chiarimento</p>
+            <p className="clarification-title">Abbiamo bisogno di un chiarimento</p>
             <p className="clarification-question">{clarify.question}</p>
             {clarify.choices.length > 0 && (
               <div className="clarify-choice-row">
@@ -512,7 +692,7 @@ export default function App() {
               </div>
             )}
             <label className="label" htmlFor="clarify-answer">
-              Altro
+              Oppure scrivi la tua risposta
             </label>
             <textarea
               id="clarify-answer"
@@ -521,44 +701,76 @@ export default function App() {
               rows={2}
               placeholder="Scrivi qui la tua risposta..."
             />
-            <div className="row">
-              <button type="button" onClick={() => void onSubmitClarify()} disabled={loading.plan || !clarifyAnswer.trim()}>
-                {loading.plan ? "Invio..." : "Invia risposta"}
-              </button>
-            </div>
+            <button type="button" onClick={() => void onSubmitClarify()} disabled={loading.plan || !clarifyAnswer.trim()}>
+              {loading.plan ? (
+                <><span className="spinner" /> Invio in corso...</>
+              ) : (
+                "Invia risposta"
+              )}
+            </button>
           </div>
         )}
       </section>
 
-      <section className="card">
-        <h2>3) Conferma Prima Dell'applicazione</h2>
-        {!planHasOperations && !hasPendingClarification && <p className="state-note">{EMPTY_PLAN_OPERATIONS_MESSAGE}</p>}
+      {/* ── Step 3: Review & Confirm ── */}
+      <section className={`card${currentStep === 3 ? " card-active" : ""}${currentStep > 3 ? " card-done" : ""}`}>
+        <div className="card-header">
+          <div className={`card-step-num${currentStep > 3 ? " card-step-done" : ""}`}>
+            {currentStep > 3 ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            ) : (
+              "3"
+            )}
+          </div>
+          <div className="card-header-text">
+            <h2>Rivedi e conferma</h2>
+            <p className="card-desc">Verifica le modifiche prima di applicarle ai tuoi dati</p>
+          </div>
+        </div>
+
+        {!planHasOperations && !hasPendingClarification && (
+          <p className="state-note">{EMPTY_PLAN_OPERATIONS_MESSAGE}</p>
+        )}
+
         {isLimitReached && (
           <div className="limit-block">
-            <p className="limit-text">Hai raggiunto il limite di utilizzi gratuiti. L'esecuzione e bloccata.</p>
-            <button className="pro-cta" onClick={onUpgradeClick}>
-              Passa al piano Pro
+            <div>
+              <p className="limit-title">Limite raggiunto</p>
+              <p className="limit-desc">Hai esaurito le elaborazioni gratuite disponibili.</p>
+            </div>
+            <button className="btn-upgrade" onClick={onUpgradeClick}>
+              Passa a Pro
             </button>
           </div>
         )}
+
         <div className="row">
-          <select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value)}>
-            <option value="xlsx">XLSX</option>
-            <option value="csv">CSV</option>
-          </select>
+          <div className="format-select">
+            <label className="label" htmlFor="output-format">Formato output</label>
+            <select id="output-format" value={outputFormat} onChange={(event) => setOutputFormat(event.target.value)}>
+              <option value="xlsx">XLSX (Excel)</option>
+              <option value="csv">CSV</option>
+            </select>
+          </div>
           <button
             onClick={onOpenConfirmation}
             disabled={!canOpenConfirmation || loading.preview || isLimitReached}
           >
-            {loading.preview ? "Preparazione preview..." : "Apri Conferma"}
+            {loading.preview ? (
+              <><span className="spinner" /> Preparazione anteprima...</>
+            ) : (
+              "Anteprima e conferma"
+            )}
           </button>
         </div>
 
         {showConfirmation && (
           <div className="confirm-panel">
-            <h3>Conferma Trasformazioni</h3>
+            <h3>Riepilogo trasformazioni</h3>
 
-            {loading.preview && <p className="muted">Genero anteprima del risultato...</p>}
+            {loading.preview && <p className="muted">Generazione anteprima del risultato in corso...</p>}
 
             {!loading.preview && previewPayload && (
               <>
@@ -574,7 +786,7 @@ export default function App() {
                   ))}
                 </div>
 
-                <p className="label">Step previsti</p>
+                <p className="label">Operazioni previste</p>
                 <ol className="step-list">
                   {previewPayload.steps.map((step, index) => (
                     <li key={`${step.title}-${index}`} className="step-item">
@@ -593,11 +805,11 @@ export default function App() {
                   ))}
                 </ol>
 
-                <p className="label">Preview risultato (max 10 righe)</p>
+                <p className="label">Anteprima risultato (max 10 righe)</p>
                 <DataTable rows={previewPayload.analysis.preview} />
 
                 {!previewPayload.previewAvailable && (
-                  <p className="state-note">Preview non disponibile: applicazione disabilitata.</p>
+                  <p className="state-note">Anteprima non disponibile: l'applicazione e disabilitata.</p>
                 )}
 
                 <div className="row action-row">
@@ -605,11 +817,14 @@ export default function App() {
                     Annulla
                   </button>
                   <button
-                    className="danger"
                     onClick={onApply}
                     disabled={!previewPayload.previewAvailable || loading.apply || isLimitReached || hasPendingClarification}
                   >
-                    {loading.apply ? "Applicazione..." : "Applica trasformazioni"}
+                    {loading.apply ? (
+                      <><span className="spinner" /> Applicazione in corso...</>
+                    ) : (
+                      "Applica trasformazioni"
+                    )}
                   </button>
                 </div>
               </>
@@ -618,53 +833,92 @@ export default function App() {
         )}
       </section>
 
-      <section className="card">
-        <h2>4) Download Risultato</h2>
+      {/* ── Step 4: Download ── */}
+      <section className={`card${currentStep === 4 ? " card-active" : ""}`}>
+        <div className="card-header">
+          <div className="card-step-num">4</div>
+          <div className="card-header-text">
+            <h2>Scarica il risultato</h2>
+            <p className="card-desc">Il file trasformato e pronto per il download</p>
+          </div>
+        </div>
+
         {applyPayload?.analysis ? (
           <>
-            <p className="muted">Output pronto. Uso residuo: {applyPayload.remainingUses}</p>
-            <h3>Risultato in parole semplici</h3>
+            <div className="result-success">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                <polyline points="22 4 12 14.01 9 11.01" />
+              </svg>
+              <span>Trasformazione completata con successo</span>
+            </div>
+            <h3>Risultato in breve</h3>
             <ul className="human-summary">
               {resultExplanation.map((item) => (
                 <li key={item}>{item}</li>
               ))}
             </ul>
-            <a className="download" href={buildDownloadUrl(applyPayload.resultId)}>
+            <a className="download-btn" href={buildDownloadUrl(applyPayload.resultId)}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
               Scarica file trasformato
             </a>
-            <h3>Preview Output</h3>
+            <h3>Anteprima output</h3>
             <DataTable rows={applyPayload.analysis.preview} />
           </>
         ) : (
-          <p className="muted">Nessun output disponibile. Completa la conferma per applicare il piano.</p>
+          <p className="muted">Nessun risultato disponibile. Completa i passaggi precedenti per generare l'output.</p>
         )}
       </section>
 
-      <section className="card">
-        <h2>Debug Pipeline</h2>
-        <p className="muted">Upload, analisi, piano ed errori recenti.</p>
-        <p className="label">Upload result</p>
-        <pre className="mono">{pipelineDebug.uploadResult ? JSON.stringify(pipelineDebug.uploadResult, null, 2) : "Nessun dato."}</pre>
-        <p className="label">Analyze result</p>
-        <pre className="mono">{pipelineDebug.analyzeResult ? JSON.stringify(pipelineDebug.analyzeResult, null, 2) : "Nessun dato."}</pre>
-        <p className="label">Plan result</p>
-        <pre className="mono">{pipelineDebug.planResult ? JSON.stringify(pipelineDebug.planResult, null, 2) : "Nessun dato."}</pre>
-        <p className="label">Errori</p>
-        {pipelineDebug.errors.length === 0 ? (
-          <p className="muted">Nessun errore registrato.</p>
-        ) : (
-          <ul className="warnings">
-            {pipelineDebug.errors.map((item, idx) => (
-              <li key={`${item.stage}-${idx}`}>
-                [{item.stage}] {item.message}
-              </li>
-            ))}
-          </ul>
+      {/* ── Debug (Collapsible) ── */}
+      <section className="card debug-section">
+        <button className="debug-toggle" type="button" onClick={() => setShowDebug(!showDebug)}>
+          <span>Dettagli tecnici</span>
+          <svg
+            className={`debug-chevron${showDebug ? " rotated" : ""}`}
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
+        {showDebug && (
+          <div className="debug-content">
+            <p className="label">Upload result</p>
+            <pre className="mono debug-pre">{pipelineDebug.uploadResult ? JSON.stringify(pipelineDebug.uploadResult, null, 2) : "Nessun dato."}</pre>
+            <p className="label">Analyze result</p>
+            <pre className="mono debug-pre">{pipelineDebug.analyzeResult ? JSON.stringify(pipelineDebug.analyzeResult, null, 2) : "Nessun dato."}</pre>
+            <p className="label">Plan result</p>
+            <pre className="mono debug-pre">{pipelineDebug.planResult ? JSON.stringify(pipelineDebug.planResult, null, 2) : "Nessun dato."}</pre>
+            <p className="label">Errori recenti</p>
+            {pipelineDebug.errors.length === 0 ? (
+              <p className="muted">Nessun errore registrato.</p>
+            ) : (
+              <ul className="warnings">
+                {pipelineDebug.errors.map((item, idx) => (
+                  <li key={`${item.stage}-${idx}`}>
+                    [{item.stage}] {item.message}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
       </section>
 
+      {/* ── Error & Toast ── */}
       {error && (
-        <section className="card error">
+        <section className="card error-card">
           <strong>Errore:</strong> {error}
         </section>
       )}
