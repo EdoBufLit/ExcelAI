@@ -171,6 +171,19 @@ export default function App() {
     return parsedPlanResult.plan;
   }
 
+  const hasPendingClarification = Boolean(clarify);
+  const hasUploadedFile = Boolean(uploadPayload?.fileId);
+  const hasNonEmptyPlan = useMemo(() => planText.trim().length > 0, [planText]);
+
+  const planHasOperations = useMemo(() => {
+    if (!hasNonEmptyPlan) return false;
+    const parsedPlanResult = parsePlanText(planText);
+    if (!parsedPlanResult.isValidJson) return false;
+    return Array.isArray(parsedPlanResult.plan?.operations) && parsedPlanResult.plan.operations.length > 0;
+  }, [planText, hasNonEmptyPlan]);
+
+  const canOpenConfirmation = hasUploadedFile && hasNonEmptyPlan && planHasOperations && !hasPendingClarification;
+  
   useEffect(() => {
     refreshUsage();
   }, []);
@@ -382,18 +395,6 @@ export default function App() {
     return usage.remainingUses <= 0;
   }, [usage]);
 
-  const hasPendingClarification = Boolean(clarify);
-  const hasUploadedFile = Boolean(uploadPayload?.fileId);
-  const hasNonEmptyPlan = useMemo(() => planText.trim().length > 0, [planText]);
-
-  const planHasOperations = useMemo(() => {
-    if (!hasNonEmptyPlan) return false;
-    const parsedPlanResult = parsePlanText(planText);
-    if (!parsedPlanResult.isValidJson) return false;
-    return Array.isArray(parsedPlanResult.plan?.operations) && parsedPlanResult.plan.operations.length > 0;
-  }, [planText, hasNonEmptyPlan]);
-
-  const canOpenConfirmation = hasUploadedFile && hasNonEmptyPlan && planHasOperations && !hasPendingClarification;
 
   const currentStep = useMemo(() => {
     if (applyPayload?.analysis) return 4;
